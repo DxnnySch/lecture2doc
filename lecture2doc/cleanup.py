@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from lecture2doc.api import retry_call
+from lecture2doc.config import AUTO
 from lecture2doc.fsutil import atomic_write_json
 
 log = logging.getLogger(__name__)
@@ -88,8 +89,8 @@ def _chat(client, model: str, messages: list[dict], cache: LLMCache, limiter=Non
     if hit is not None:
         return hit
     def call():
-        if limiter is not None:
-            limiter.wait()  # every attempt, including retries, counts against the quota
+        if limiter is not None and model != AUTO:
+            limiter.wait()  # every attempt, including retries, counts against the quota (AUTO: per model, see modelpick)
         return client.chat.completions.create(model=model, messages=messages, temperature=0)
 
     resp = retry_call(call)

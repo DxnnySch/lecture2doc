@@ -90,7 +90,7 @@ For a video called `week3.mp4` with the slides `week3.pdf`, and the output folde
 
 1. Video frames are sampled and compared with the PDF pages to find which slide is on screen when. Pillarboxed 4:3 slides in a 16:9 recording are handled, and the page number in the corner of the video identifies half-built animated slides.
 2. The audio is cut at every slide change, and each stretch on one slide is transcribed on its own, so every word belongs to exactly one slide.
-3. An LLM fixes recognition errors. The glossary is built once from the text of all the slide PDFs in the folder (and can be edited by you), and each stretch of transcript is corrected with that glossary, the list of all slide titles, and the text of the current, previous and next slide. Guardrails fall back to the raw text if the output deviates too much.
+3. An LLM (the fastest of the most powerful ones, chosen automatically) fixes recognition errors. The glossary is built once from the text of all the slide PDFs in the folder (and can be edited by you), and each stretch of transcript is corrected with that glossary, the list of all slide titles, and the text of the current, previous and next slide. Guardrails fall back to the raw text if the output deviates too much.
 4. The Word document is written with real heading styles, so the navigation pane and Ctrl+F work.
 
 Slide titles are taken from the PDF: the largest text in the upper part of each page, so footers and page numbers are ignored.
@@ -106,9 +106,20 @@ Set these in `.env`:
 | `SCADS_API_KEY` | (required) | your ScaDS.AI API key |
 | `SCADS_BASE_URL` | `https://llm.scads.ai/v1` | API endpoint |
 | `SCADS_STT_MODEL` | `alias-stt` | speech-to-text model |
-| `SCADS_LLM_MODEL` | `alias-huge-no-thinking` | model for transcript cleanup |
-| `SCADS_GLOSSARY_MODEL` | same as `SCADS_LLM_MODEL` | optional separate model for the glossary step (e.g. a reasoning model) |
-| `SCADS_REQUESTS_PER_MINUTE` | `25` | request cap; the gateway allowed 30 per key and model when this was written, lower it if your quota is smaller |
+| `SCADS_LLM_MODEL` | `auto` | model for the transcript cleanup. `auto` = the fastest of the powerful models for every request (see below); set a model name to always use that one |
+| `SCADS_GLOSSARY_MODEL` | same as `SCADS_LLM_MODEL` | model for the glossary step; same rule |
+| `SCADS_LLM_MODELS` | the four models below | the models `auto` chooses from, comma separated |
+| `SCADS_REQUESTS_PER_MINUTE` | `25` | request cap per model; the gateway allowed 30 per key and model when this was written, lower it if your quota is smaller |
+
+### Automatic choice of the AI model
+
+The ScaDS.AI gateway offers several strong models and their speed differs a lot (in a test between 0.8 s and 11 s for the same cleanup request). Unless you set `SCADS_LLM_MODEL`, lecture2doc handles this itself:
+
+1. The API does not say how strong a model is, so the candidates are a short list of the most powerful chat models: `alias-huge-no-thinking`, `zai-org/GLM-5.3`, `MiniMaxAI/MiniMax-M3` and `openai/gpt-oss-120b` (change it with `SCADS_LLM_MODELS`). Models the API does not offer right now are dropped.
+2. At the start of a glossary build or a cleanup, all candidates get the same small test request in parallel (about 10 seconds). A model that fails it or answers wrongly is not used.
+3. Every following request goes to the model expected to answer first, based on its measured speed (kept up to date from the real answers) and on how many requests it is already working on, so busy models share the load. A model that returns an error or hits its rate limit is skipped for a minute and the next one answers.
+
+The log under *Show details* lists the models by speed and how many requests each one answered. The speech-to-text model is not part of this (`SCADS_STT_MODEL`).
 
 The API client is the standard OpenAI one, so another OpenAI-compatible service may work by changing the base URL and model names. This is untested.
 
@@ -119,6 +130,7 @@ The API client is the standard OpenAI one, so another OpenAI-compatible service 
 | The page says to add your API key | create `.env` as described in step 3 of the setup, then reload the page |
 | `ffmpeg` not found | install it and make sure `ffmpeg -version` works in the same terminal |
 | A video has no PDF | the names are too different; choose the PDF in the drop-down of that lecture |
+| The AI always uses one model although you expect the automatic choice | remove or comment out `SCADS_LLM_MODEL` (and `SCADS_GLOSSARY_MODEL`) in `.env`: a model named there is always used |
 | *Failed: ... open in Word* | the `.docx` is open in Word; close it and process the lecture again (nothing is transcribed twice) |
 | Wrong slide on some pages, or many unmatched seconds | tune `--threshold` and `--smooth` or correct `segments.json` on the command line (see below) |
 | HTTP 429 (rate limit) | retried automatically; if it keeps happening, lower `SCADS_REQUESTS_PER_MINUTE` |

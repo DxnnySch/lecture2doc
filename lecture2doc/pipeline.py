@@ -15,6 +15,7 @@ from lecture2doc.audiocuts import CutReport, detect_silences, plan_cuts
 from lecture2doc.cleanup import LLMCache, build_glossary, build_outline, cleanup_spans
 from lecture2doc.config import ConfigError, check_ffmpeg, load_config
 from lecture2doc.docx_out import SpanText, write_docx
+from lecture2doc.modelpick import llm_client
 from lecture2doc.pagenumbers import (NumberEvidence, extract_strips, find_number_region, number_templates,
                                      numbers_from_strips)
 from lecture2doc.segment import (Span, absorb_unmatched, build_spans, extract_frames, match_frames, probe_aspect,
@@ -190,12 +191,22 @@ def make_glossary(folder, client=None, cfg=None, cache=None, limiter=None, on_pr
     total = len({s.deck for s in slides})
     if on_progress is not None:
         on_progress(0, total, 0, 0)
-    text = build_glossary(client or make_client(cfg), cfg.glossary_model, slides, cache or LLMCache(None),
+    text = build_glossary(client or _llm(cfg), cfg.glossary_model, slides, cache or LLMCache(None),
                           limiter=limiter or RateLimiter(cfg.requests_per_minute),
                           on_progress=(lambda done, n, decks: on_progress(decks, total, done, n))
                           if on_progress else None)
     save_glossary(folder, text)
     return text
+
+
+def _llm(cfg, say=lambda text: None):
+    """The client for the AI text requests; with the automatic model choice its speed ranking is measured first."""
+    try:
+        return llm_client(cfg, make_client(cfg), say)
+    except (ValueError, RuntimeError) as exc:
+        raise PipelineError(str(exc)) from None
+    except openai.APIError as exc:
+        raise PipelineError(f"the AI service is not reachable: {exc}") from None
 
 
 def _config():
@@ -453,8 +464,9 @@ def run(job: Job, reporter: Reporter | None = None) -> Path:
     if not opts.cleanup:
         cleans = raws
     else:
+        reporter.stage("cleanup", 0.0, "choosing the fastest AI model")
+        client = _llm(cfg, reporter.log)
         reporter.stage("cleanup", 0.0, "preparing the glossary")
-        client = make_client(cfg)
         cache = LLMCache(job.workdir / "llm_cache.json")
         glossary = read_glossary(job.pdf.parent)
         if glossary is None:  # the first run builds it; edit it (in the UI or the file) and run again
@@ -468,6 +480,9 @@ def run(job: Job, reporter: Reporter | None = None) -> Path:
 
         cleans = cleanup_spans(client, cfg.llm_model, glossary, outline, slides, spans, raws, cache,
                                limiter=limiter, on_progress=clean_progress)
+
+    if opts.cleanup and hasattr(client, "summary"):
+        reporter.log("AI requests per model: " + client.summary())
 
     (job.workdir / "segments.json").write_text(json.dumps({
         "video": str(job.video),

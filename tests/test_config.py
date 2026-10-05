@@ -2,7 +2,7 @@ import pytest
 from lecture2doc.config import ConfigError, load_config
 
 KEYS = ["SCADS_API_KEY", "SCADS_BASE_URL", "SCADS_STT_MODEL", "SCADS_LLM_MODEL", "SCADS_GLOSSARY_MODEL",
-        "SCADS_REQUESTS_PER_MINUTE"]
+        "SCADS_REQUESTS_PER_MINUTE", "SCADS_LLM_MODELS"]
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +26,7 @@ def test_glossary_model_can_differ(tmp_path):
     env = tmp_path / ".env"
     env.write_text("SCADS_API_KEY=k\nSCADS_GLOSSARY_MODEL=big\n")
     assert load_config(env).glossary_model == "big"
-    assert load_config(env).llm_model == "alias-huge-no-thinking"
+    assert load_config(env).llm_model == "auto"  # not set: the fastest powerful model is chosen per request
 
 
 def test_real_environment_overrides_file(tmp_path, monkeypatch):

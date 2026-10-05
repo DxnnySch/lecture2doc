@@ -16,6 +16,10 @@ def default_env() -> Path:
     return here if here.exists() else Path(__file__).resolve().parent.parent / ".env"
 
 
+AUTO = "auto"  # as llm_model / glossary_model: pick the fastest of the powerful models for every request
+POWERFUL_MODELS = ("alias-huge-no-thinking", "zai-org/GLM-5.3", "MiniMaxAI/MiniMax-M3", "openai/gpt-oss-120b")
+
+
 class ConfigError(Exception):
     pass
 
@@ -28,6 +32,7 @@ class Config:
     llm_model: str
     glossary_model: str
     requests_per_minute: int = 25  # below the gateway's observed 30/min per key and model
+    llm_models: tuple[str, ...] = POWERFUL_MODELS  # what AUTO chooses from
 
     def __repr__(self) -> str:  # never expose the key
         return f"Config(base_url={self.base_url!r}, stt_model={self.stt_model!r}, llm_model={self.llm_model!r})"
@@ -38,7 +43,7 @@ def load_config(env_path: Path | None = None) -> Config:
     key = values.get("SCADS_API_KEY")
     if not key:
         raise ConfigError("SCADS_API_KEY is not set (put it in .env, see .env.example)")
-    llm = values.get("SCADS_LLM_MODEL") or "alias-huge-no-thinking"
+    llm = values.get("SCADS_LLM_MODEL") or AUTO
     rpm = values.get("SCADS_REQUESTS_PER_MINUTE") or "25"
     try:
         per_minute = int(rpm)
@@ -53,6 +58,8 @@ def load_config(env_path: Path | None = None) -> Config:
         llm_model=llm,
         glossary_model=values.get("SCADS_GLOSSARY_MODEL") or llm,
         requests_per_minute=per_minute,
+        llm_models=tuple(m.strip() for m in (values.get("SCADS_LLM_MODELS") or "").split(",") if m.strip())
+        or POWERFUL_MODELS,
     )
 
 
