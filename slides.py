@@ -31,6 +31,13 @@ def _first_line(text: str) -> str | None:
     return None
 
 
+def _fallback_title(body: str, limit: int = 100) -> str | None:
+    line = _first_line(body)
+    if line is not None and len(line) > limit:
+        line = line[: limit - 1].rstrip() + "…"
+    return line
+
+
 def render_pdf(pdf_path, width: int = 480) -> tuple[list[Image.Image], list[str]]:
     images, texts = [], []
     with pymupdf.open(pdf_path) as doc:
@@ -53,7 +60,7 @@ def read_pptx(pptx_path) -> list[tuple[str | None, str]]:
         body = "\n".join(
             sh.text_frame.text for sh in s.shapes if sh.has_text_frame and sh.text_frame.text.strip()
         )
-        out.append((title or None, body))
+        out.append((title or _fallback_title(body), body))
     return out
 
 

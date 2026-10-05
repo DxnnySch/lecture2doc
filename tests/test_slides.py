@@ -17,7 +17,7 @@ def test_titles_from_pptx_when_counts_match(tmp_path):
     assert [s.number for s in slides] == [1, 2]
     assert slides[0].title == "Intro to GDI"
     assert "body one" in slides[0].text
-    assert slides[1].title is None
+    assert slides[1].title == "only body"
 
 
 def test_hidden_pptx_slides_are_skipped(tmp_path):
@@ -44,3 +44,19 @@ def test_unreadable_pptx_falls_back_to_pdf_titles(tmp_path, caplog):
         slides = load_slides(pdf, bad)
     assert [s.title for s in slides] == ["Title 1", "Title 2", "Title 3"]
     assert "cannot read PPTX" in caplog.text
+
+
+def test_title_falls_back_to_first_body_line_squashed_and_truncated(tmp_path):
+    pdf = make_pdf(tmp_path / "a.pdf", 1)
+    long_line = "word " * 40
+    pptx = make_pptx(tmp_path / "a.pptx", [(None, "  first   line \nsecond", False)])
+    assert load_slides(pdf, pptx)[0].title == "first line"
+    pptx = make_pptx(tmp_path / "b.pptx", [(None, long_line, False)])
+    title = load_slides(pdf, pptx)[0].title
+    assert len(title) == 100 and title.endswith("…")
+
+
+def test_title_none_when_slide_has_no_text(tmp_path):
+    pdf = make_pdf(tmp_path / "a.pdf", 1)
+    pptx = make_pptx(tmp_path / "a.pptx", [(None, "", False)])
+    assert load_slides(pdf, pptx)[0].title is None
