@@ -226,10 +226,9 @@ def test_llm_cache_ignores_stray_tmp_file(tmp_path):
     assert LLMCache(path).get("a") == "one"
 
 
-def test_llm_cache_failed_replace_keeps_old_file_and_cleans_tmp(tmp_path, monkeypatch):
+def test_llm_cache_that_cannot_be_saved_warns_and_keeps_the_old_file(tmp_path, monkeypatch, caplog):
+    import logging
     import os
-
-    import pytest
 
     path = tmp_path / "llm_cache.json"
     cache = LLMCache(path)
@@ -239,11 +238,13 @@ def test_llm_cache_failed_replace_keeps_old_file_and_cleans_tmp(tmp_path, monkey
         raise OSError("disk full")
 
     monkeypatch.setattr(os, "replace", boom)
-    with pytest.raises(OSError, match="disk full"):
-        cache.set("b", "two")
+    with caplog.at_level(logging.WARNING):
+        cache.set("b", "two")  # must not abort a cleanup that otherwise worked
     monkeypatch.undo()
-    assert [p.name for p in tmp_path.iterdir()] == ["llm_cache.json"]
-    assert LLMCache(path).get("b") is None and LLMCache(path).get("a") == "one"
+    assert "could not save" in caplog.text
+    assert cache.get("b") == "two"  # still usable in memory
+    assert [p.name for p in tmp_path.iterdir()] == ["llm_cache.json"]  # no temp file left behind
+    assert LLMCache(path).get("b") is None and LLMCache(path).get("a") == "one"  # the file on disk is the old one
 
 
 class CountingLimiter:

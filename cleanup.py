@@ -56,7 +56,10 @@ class LLMCache:
         with self._lock:
             self._data[key] = value
             if self.path:
-                atomic_write_json(self.path, self._data)
+                try:
+                    atomic_write_json(self.path, self._data)
+                except OSError as exc:  # the result is still valid in memory; do not abort the run for a cache file
+                    log.warning("could not save the cache %s (%s); continuing without saving", self.path, exc)
 
 
 def strip_think(text: str) -> str:

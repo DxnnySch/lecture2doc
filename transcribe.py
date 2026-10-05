@@ -6,6 +6,7 @@ on word timestamps, which the service only estimates."""
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import tempfile
 import threading
@@ -14,6 +15,8 @@ from pathlib import Path
 
 from api import make_client, retry_call
 from fsutil import atomic_write_json
+
+log = logging.getLogger(__name__)
 
 MIN_SPEECH = 0.5  # seconds: a clip with less speech than this is not sent (silence makes the model hallucinate)
 
@@ -94,7 +97,11 @@ def transcribe_clips(cfg, media, clips, cache_path, language: str | None = None,
             with lock:
                 texts[i] = text
                 done[key] = text
-                atomic_write_json(cache_path, {"meta": meta, "clips": done})
+                try:
+                    atomic_write_json(cache_path, {"meta": meta, "clips": done})
+                except OSError as exc:  # the text is in memory; a locked cache file must not abort the run
+                    log.warning("could not save the transcription cache %s (%s); continuing without saving",
+                                cache_path, exc)
                 finished[0] += 1
                 print(f"  transcribed clip {finished[0]}/{len(todo)}", flush=True)
 

@@ -146,3 +146,18 @@ def test_a_media_file_that_cannot_be_cut_is_a_clear_error(tmp_path):
     junk.write_bytes(b"not media")
     with pytest.raises(RuntimeError, match="clip"):
         transcribe_clips(CFG, junk, loud(0, 5), tmp_path / "c.json", client=FakeClient())
+
+
+def test_a_cache_that_cannot_be_saved_does_not_stop_the_transcription(tmp_path, audio, monkeypatch, caplog):
+    import logging
+
+    import transcribe
+
+    def locked(path, data, **kwargs):
+        raise PermissionError(13, "Zugriff verweigert")
+
+    monkeypatch.setattr(transcribe, "atomic_write_json", locked)
+    with caplog.at_level(logging.WARNING):
+        texts = transcribe_clips(CFG, audio, loud(0, 3, 6, 9, 12), tmp_path / "clips.json", client=FakeClient())
+    assert texts == [f"text for clip_{i}.mp3" for i in range(4)]  # the results are still returned
+    assert "could not save" in caplog.text
