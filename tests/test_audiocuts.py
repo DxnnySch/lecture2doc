@@ -1,6 +1,6 @@
 import pytest
 
-from audiocuts import Clip, detect_silences, plan_cuts
+from audiocuts import Clip, detect_silences, merge_silences, plan_cuts
 from helpers import make_wav
 from segment import Span
 
@@ -102,3 +102,28 @@ def test_silence_at_the_very_start_and_end_of_the_recording_is_trimmed_too():
 def test_trimming_never_leaves_a_clip_shorter_than_the_minimum():
     clips, _ = plan_cuts(spans(0, 10, 20), [(9.0, 11.0), (11.2, 14.0), (14.1, 20.0)])
     assert all(c.end - c.start >= 0.5 for c in clips)
+
+
+
+def test_silences_separated_by_a_tiny_blip_are_one_silence():
+    pieces = [(1590.18, 1591.44), (1591.46, 1593.28), (1593.29, 1595.53), (1600.0, 1601.0)]
+    assert merge_silences(pieces) == [(1590.18, 1595.53), (1600.0, 1601.0)]
+    assert merge_silences([(0.0, 1.0), (1.2, 2.0)], max_interruption=0.25) == [(0.0, 2.0)]   # a 0.2 s blip
+    assert merge_silences([(0.0, 1.0), (1.4, 2.0)], max_interruption=0.25) == [(0.0, 1.0), (1.4, 2.0)]  # 0.4 s: a word
+    assert merge_silences([]) == [] and merge_silences([(2.0, 3.0)]) == [(2.0, 3.0)]
+
+
+def test_detected_silences_are_merged_across_a_short_noise_blip(tmp_path):
+    wav = make_wav(tmp_path / "blip.wav", [("tone", 2.0), ("silence", 1.0), ("tone", 0.1), ("silence", 1.5),
+                                           ("tone", 2.0), ("silence", 1.0), ("tone", 0.6), ("silence", 1.0), ("tone", 1.0)])
+    found = detect_silences(wav)
+    assert len(found) == 3  # 2.0-4.6 is one silence (the 0.1 s blip is no speech); a 0.6 s word is not bridged
+    assert found[0] == pytest.approx((2.0, 4.6), abs=0.08)
+
+
+def test_a_clip_does_not_keep_the_silence_before_a_noise_blip(tmp_path):
+    # the silent stretch after the speech is interrupted by a 0.1 s blip: the clip must still end right after the speech
+    wav = make_wav(tmp_path / "t.wav", [("tone", 5.0), ("silence", 1.2), ("tone", 0.1), ("silence", 1.8), ("tone", 5.0)])
+    clips, report = plan_cuts(spans(0, 8, 12.1), detect_silences(wav))  # the video says the slide changes at 8 s
+    assert report.in_silence == 1
+    assert clips[0].end == pytest.approx(5.25, abs=0.1) and clips[1].start == pytest.approx(7.85, abs=0.1)

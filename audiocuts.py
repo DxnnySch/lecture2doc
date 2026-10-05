@@ -15,6 +15,7 @@ MIN_SILENCE = 0.1      # seconds: shorter silences are not reported at all
 MIN_GAP = 0.5          # seconds: only silences at least this long can be a gap between two recordings
 WINDOW = 3.0           # seconds around a slide change in which its gap is looked for
 MIN_CLIP = 0.5         # seconds: no clip may be shorter than this
+BLIP = 0.25            # seconds: a sound shorter than this between two silences is noise, not speech
 KEEP_SILENCE = 0.25    # seconds of the silent gap kept at each end of a clip (the model hallucinates on long silence)
 
 
@@ -41,6 +42,18 @@ def _duration(media) -> float:
         raise RuntimeError(f"ffprobe could not read the duration of {media}: {exc}") from exc
 
 
+def merge_silences(silences, max_interruption: float = BLIP) -> list[tuple[float, float]]:
+    """Join silences that are only separated by a tiny noise blip: the silence between two recordings often comes
+    out of the detector in several pieces."""
+    merged: list[tuple[float, float]] = []
+    for start, end in silences:
+        if merged and start - merged[-1][1] <= max_interruption:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def detect_silences(media, noise_db: float = SILENCE_DB, min_len: float = MIN_SILENCE) -> list[tuple[float, float]]:
     """(start, end) in seconds of every silence in the audio of `media`, in order."""
     cmd = ["ffmpeg", "-v", "info", "-i", str(media), "-vn", "-af", f"silencedetect=noise={noise_db}dB:d={min_len}",
@@ -58,7 +71,7 @@ def detect_silences(media, noise_db: float = SILENCE_DB, min_len: float = MIN_SI
             start = None
     if start is not None:  # the recording ends in silence
         silences.append((start, _duration(media)))
-    return silences
+    return merge_silences(silences)
 
 
 def _speech_seconds(start: float, end: float, silences) -> float:
