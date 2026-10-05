@@ -14,7 +14,7 @@ lecture.mp4 + slides.pdf + slides.pptx   ->   lecture.docx
 | --- | --- |
 | Python 3.11 or newer | check with `python --version` |
 | ffmpeg | must be on your `PATH`, check with `ffmpeg -version` (see below) |
-| A ScaDS.AI API key | used for speech-to-text and transcript cleanup |
+| A ScaDS.AI API key | used for speech-to-text and transcript cleanup; [get one here](https://selfservice.tu-dresden.de/services/scads-llm-api/api-access/) |
 | Your lecture files | the video (`.mp4`), the slides exported as PDF, and the original `.pptx` |
 
 Installing ffmpeg: Windows `winget install ffmpeg`, macOS `brew install ffmpeg`, Debian/Ubuntu `sudo apt install ffmpeg`.
@@ -24,8 +24,8 @@ Installing ffmpeg: Windows `winget install ffmpeg`, macOS `brew install ffmpeg`,
 **1. Get the code and create a virtual environment**
 
 ```bash
-git clone <this repository's URL>
-cd lecture_video-to-text
+git clone https://github.com/DxnnySch/lecture2doc.git
+cd lecture2doc
 python -m venv .venv
 ```
 
