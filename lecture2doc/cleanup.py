@@ -100,29 +100,39 @@ def _chat(client, model: str, messages: list[dict], cache: LLMCache, limiter=Non
     return out
 
 
-def build_glossary(client, model: str, slides, cache: LLMCache, max_chars: int = 40000, limiter=None) -> str:
-    chunks, current, size = [], [], 0
+def build_glossary(client, model: str, slides, cache: LLMCache, max_chars: int = 40000, limiter=None,
+                   on_progress=None) -> str:
+    """`on_progress(done, total, decks)` is called after every request: `decks` is how many different slide decks
+    (slides with a `deck` attribute) the finished requests covered."""
+    chunks, decks, current, current_decks, size = [], [], [], set(), 0
     for s in slides:
         piece = f"Slide {s.number} ({s.title or 'untitled'}):\n{s.text}\n"
         if current and size + len(piece) > max_chars:
             chunks.append("".join(current))
-            current, size = [], 0
+            decks.append(current_decks)
+            current, current_decks, size = [], set(), 0
         current.append(piece)
+        current_decks.add(getattr(s, "deck", None))
         size += len(piece)
     if current:
         chunks.append("".join(current))
+        decks.append(current_decks)
     seen: dict[str, str] = {}
-    for chunk in chunks:
+    covered: set = set()
+    for i, chunk in enumerate(chunks):
         try:
             reply = _chat(client, model, [{"role": "system", "content": GLOSSARY_SYSTEM},
                                           {"role": "user", "content": chunk}], cache, limiter)
         except Exception as exc:
             log.warning("build_glossary chunk extraction failed: %s", exc)
-            continue
+            reply = ""
         for line in reply.splitlines():
             term = re.sub(r"^\s*[-*•\d.)]+\s*", "", line).strip()
             if term:
                 seen.setdefault(term.lower(), term)
+        covered |= decks[i]
+        if on_progress is not None:
+            on_progress(i + 1, len(chunks), len(covered - {None}))
     return "\n".join(list(seen.values())[:MAX_GLOSSARY_LINES])
 
 

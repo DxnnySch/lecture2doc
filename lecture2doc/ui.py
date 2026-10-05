@@ -91,6 +91,7 @@ class App:
     def __init__(self, settings_file: Path = SETTINGS_FILE):
         self.settings_file = settings_file
         self.lock = threading.RLock()
+        self.glossary_progress = {"decks_done": 0, "decks_total": 0}
         self.glossary_lock = threading.Lock()  # building a glossary takes seconds; keep it apart from the state lock
         self.settings = {"pdf_dir": "", "video_dir": "", "out_dir": str(Path.cwd() / "output"),
                          "options": {"cleanup": True, "keep_raw": False, "thumbnails": True, "timestamps": True,
@@ -250,7 +251,14 @@ class App:
         pdf = self._deck(video)
         with self.glossary_lock:  # two requests for the same deck must not build it twice
             saved = None if generate else pipeline.read_glossary(pdf)
-            return saved if saved is not None else pipeline.make_glossary(pdf)
+            if saved is not None:
+                return saved
+            self.glossary_progress = {"decks_done": 0, "decks_total": 0}
+
+            def progress(done: int, total: int) -> None:
+                self.glossary_progress = {"decks_done": done, "decks_total": total}
+
+            return pipeline.make_glossary(pdf, on_progress=progress)
 
     def save_glossary(self, video: str, text: str) -> None:
         pipeline.save_glossary(self._deck(video), text)
@@ -321,6 +329,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, (STATIC / "index.html").read_bytes(), "text/html")
         if path == "/api/state":
             return self._json(self.app.state())
+        if path == "/api/glossary/progress":
+            return self._json(self.app.glossary_progress)
         if path == "/api/glossary":
             return self._guarded(lambda: {"text": self.app.glossary(_param(query, "video"))})
         self._json({"error": "not found"}, 404)

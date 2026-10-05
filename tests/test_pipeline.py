@@ -174,7 +174,7 @@ def test_cleanup_wiring(tmp_path, monkeypatch):
     calls = {}
     monkeypatch.setattr(pipeline, "make_client", lambda cfg: dummy)
 
-    def fake_glossary(client, model, slides, cache, limiter=None):
+    def fake_glossary(client, model, slides, cache, limiter=None, on_progress=None):
         calls["glossary"] = (client, model)
         calls["glossary_limiter"] = limiter
         return "GLOSS"
@@ -593,8 +593,37 @@ def test_the_glossary_is_built_from_every_pdf_in_the_folder(tmp_path, monkeypatc
     (tmp_path / "broken.pdf").write_bytes(b"not a pdf")
     seen = []
     monkeypatch.setattr(pipeline, "make_client", lambda cfg: object())
-    monkeypatch.setattr(pipeline, "build_glossary", lambda client, model, slides, cache, limiter=None:
+    monkeypatch.setattr(pipeline, "build_glossary", lambda client, model, slides, cache, limiter=None, on_progress=None:
                         seen.extend(f"{s.title}|{s.number}" for s in slides) or "term")
     assert pipeline.make_glossary(tmp_path / "a.pdf") == "term"
     assert seen == ["a: Alpha one|1", "a: Alpha two|2", "b: Beta one|1"]  # the broken file is skipped
     assert pipeline.read_glossary(tmp_path / "b.pdf") == "term\n"  # the same glossary for every PDF of the folder
+
+
+def test_the_glossary_build_reports_how_many_pdfs_are_done(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCADS_API_KEY", "dummy")
+    for name in ("a", "b", "c"):
+        make_pdf(tmp_path / f"{name}.pdf", 1)
+    monkeypatch.setattr(pipeline, "make_client", lambda cfg: object())
+    calls = []
+
+    class Reply:
+        def __init__(self, text):
+            self.choices = [type("C", (), {"message": type("M", (), {"content": text})()})()]
+
+    class Client:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kw):
+                    calls.append(1)
+                    return Reply("term")
+
+    import lecture2doc.cleanup as cleanup
+    real = cleanup.build_glossary
+    # 3 PDFs of ~10 characters each, at most 40 characters per request: every PDF needs its own request
+    monkeypatch.setattr(pipeline, "build_glossary", lambda *a, **k: real(*a, **{**k, "max_chars": 60}))
+    seen = []
+    pipeline.make_glossary(tmp_path / "a.pdf", client=Client(), on_progress=lambda done, total: seen.append((done, total)))
+    assert seen[0] == (0, 3) and seen[-1] == (3, 3) and [d for d, _ in seen] == sorted(d for d, _ in seen)
+    assert len(calls) > 1

@@ -162,19 +162,26 @@ def folder_slides(pdf) -> list[SimpleNamespace]:
             log.warning("skipping %s for the glossary (%s)", path.name, exc)
             continue
         for number, (title, text) in enumerate(pages, 1):
-            slides.append(SimpleNamespace(number=number, title=f"{path.stem}: {title or 'untitled'}", text=text))
+            slides.append(SimpleNamespace(number=number, title=f"{path.stem}: {title or 'untitled'}", text=text,
+                                          deck=path.name))
     return slides
 
 
-def make_glossary(pdf, client=None, cfg=None, cache=None, limiter=None) -> str:
-    """Build the glossary from the slides of all PDFs in the folder and save it (that file is the cache)."""
+def make_glossary(pdf, client=None, cfg=None, cache=None, limiter=None, on_progress=None) -> str:
+    """Build the glossary from the slides of all PDFs in the folder and save it (that file is the cache).
+    `on_progress(decks_done, decks_total)` reports how many of the PDFs have been covered."""
     if cfg is None:
         try:
             cfg = load_config()  # no ffmpeg needed for this
         except ConfigError as exc:
             raise PipelineError(str(exc)) from None
-    text = build_glossary(client or make_client(cfg), cfg.glossary_model, folder_slides(pdf), cache or LLMCache(None),
-                          limiter=limiter or RateLimiter(cfg.requests_per_minute))
+    slides = folder_slides(pdf)
+    total = len({s.deck for s in slides})
+    if on_progress is not None:
+        on_progress(0, total)
+    text = build_glossary(client or make_client(cfg), cfg.glossary_model, slides, cache or LLMCache(None),
+                          limiter=limiter or RateLimiter(cfg.requests_per_minute),
+                          on_progress=(lambda done, n, decks: on_progress(decks, total)) if on_progress else None)
     save_glossary(pdf, text)
     return text
 

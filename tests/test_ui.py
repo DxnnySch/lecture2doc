@@ -118,7 +118,7 @@ def test_a_video_without_slides_is_not_started(app):
 
 def test_the_glossary_is_shared_by_the_folder_and_built_only_once(app, tmp_path, monkeypatch):
     built = []
-    monkeypatch.setattr(pipeline, "make_glossary", lambda pdf: built.append(pdf.name) or "fresh")
+    monkeypatch.setattr(pipeline, "make_glossary", lambda pdf, on_progress=None: built.append(pdf.name) or "fresh")
     assert app.glossary("one.mp4") == "fresh" and built == ["one.pdf"]
     app.save_glossary("one.mp4", "alpha\n\n beta \n")
     assert app.glossary("one.mp4") == "alpha\nbeta\n" and built == ["one.pdf"]  # read from the file now
@@ -169,3 +169,8 @@ def test_unknown_videos_and_routes_are_rejected(server):
     assert call(server, "/api/glossary?video=nope.mp4")[0] == 400
     assert call(server, "/api/run", {"videos": ["../../etc/passwd"]})[0] == 400
     assert call(server, "/api/nothing", {})[0] == 404
+
+
+def test_the_glossary_progress_is_served(server):
+    status, data = call(server, "/api/glossary/progress")
+    assert status == 200 and json.loads(data) == {"decks_done": 0, "decks_total": 0}

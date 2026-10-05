@@ -305,7 +305,9 @@ function refreshFooter() {
   let text = "";
   if (busy.length) {
     const sum = busy.reduce((a, L) => a + (L.job.overall || 0), 0);
-    text = `Working on ${busy.length} lecture${busy.length > 1 ? "s" : ""} · ${Math.round(100 * sum / busy.length)}% overall`;
+    const finished = S.lectures.filter((L) => L.job.status === "done").length;
+    const batch = busy.length + finished;
+    text = `${finished} of ${batch} lecture${batch > 1 ? "s" : ""} finished · ${Math.round(100 * (sum + finished) / batch)}% overall`;
   } else if (selected.size) text = `${ready.length} selected` + (noPdf ? ` · ${noPdf} without slides` : "");
   else text = "Tick the lectures you want to process.";
   $("total").textContent = text;
@@ -341,8 +343,23 @@ poll(); setInterval(poll, 1000);
 
 /* ---------- glossary editor ---------- */
 let terms = [], gVideo = null;
-const busy = (text) => { $("g-terms").replaceChildren(el("div", { className: "spinner busy", textContent: text })); ["g-save", "g-regen", "g-add"].forEach((id) => ($(id).disabled = true)); };
-const ready = () => ["g-save", "g-regen", "g-add"].forEach((id) => ($(id).disabled = false));
+let progressTimer = null;
+const busy = (text, building = false) => {
+  const box = el("div", { className: "spinner busy" }, el("div", { textContent: text }), el("div", { className: "stage", id: "g-progress" }));
+  $("g-terms").replaceChildren(box);
+  ["g-save", "g-regen", "g-add"].forEach((id) => ($(id).disabled = true));
+  clearInterval(progressTimer);
+  if (building) {
+    const tick = async () => {
+      try {
+        const p = await api("/api/glossary/progress");
+        if ($("g-progress") && p.decks_total) $("g-progress").textContent = `${p.decks_done} of ${p.decks_total} PDFs processed`;
+      } catch (e) { /* the build request reports real errors */ }
+    };
+    tick(); progressTimer = setInterval(tick, 700);
+  }
+};
+const ready = () => { clearInterval(progressTimer); ["g-save", "g-regen", "g-add"].forEach((id) => ($(id).disabled = false)); };
 function renderTerms() {
   ready();
   const q = $("g-filter").value.trim().toLowerCase();
@@ -363,7 +380,7 @@ function setTerms(text) { terms = text.split("\n").map((t) => t.trim()).filter(B
 async function openGlossary(video) {
   const L = S.lectures.find((x) => x.video === video);
   gVideo = video; $("g-title").textContent = S.settings.pdf_dir.split(/[\\/]/).filter(Boolean).pop() || "slides folder"; $("g-error").textContent = "";
-  terms = []; busy(L && L.has_glossary ? "Loading the glossary…" : "Reading all the slides in the folder and building the glossary… (the first time takes a minute or so, then it is saved)");
+  terms = []; busy(L && L.has_glossary ? "Loading the glossary…" : "Reading all the slides in the folder and building the glossary… (the first time takes a minute or so, then it is saved)", !(L && L.has_glossary));
   $("glossary").showModal();
   try { setTerms((await api("/api/glossary?video=" + encodeURIComponent(video))).text); }
   catch (e) { $("g-terms").replaceChildren(); $("g-error").textContent = e.message; ready(); $("g-save").disabled = true; }
@@ -379,7 +396,7 @@ $("g-filter").addEventListener("input", renderTerms);
 $("g-cancel").addEventListener("click", () => $("glossary").close());
 $("g-regen").addEventListener("click", async () => {
   if (!confirm("Rebuild the list from the slides of all PDFs in the folder? Your edits are lost.")) return;
-  $("g-error").textContent = ""; busy("Building the glossary…");
+  $("g-error").textContent = ""; busy("Building the glossary…", true);
   try { setTerms((await api("/api/glossary/generate", { video: gVideo })).text); } catch (e) { $("g-error").textContent = e.message; renderTerms(); }
 });
 $("g-save").addEventListener("click", async () => {
