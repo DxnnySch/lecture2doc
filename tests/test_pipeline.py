@@ -6,9 +6,16 @@ from docx import Document
 
 import lecture2doc
 from api import RateLimiter
-from helpers import animation_state, make_pdf, make_pptx, make_video
+from helpers import animation_state, make_pdf, make_pptx, make_video, make_wav
 from slides import render_pdf
-from transcribe import Word
+
+
+def fake_stt(texts):
+    """Stands in for the speech to text: the i-th clip gets texts[i]; the clips it was asked for are recorded."""
+    def stt(cfg, video, clips, *args, **kwargs):
+        stt.clips = clips
+        return [texts[i] if i < len(texts) else "" for i in range(len(clips))]
+    return stt
 
 
 def setup(tmp_path, monkeypatch):
@@ -17,8 +24,7 @@ def setup(tmp_path, monkeypatch):
     pptx = make_pptx(tmp_path / "s.pptx", [("Alpha", "a", False), ("Beta", "b", False), ("Gamma", "c", False)])
     images, _ = render_pdf(pdf)
     video = make_video(images, [0] * 4 + [1] * 4 + [0] * 4, tmp_path / "lec.mp4")
-    words = [Word("hello", 1.0, 1.5), Word("world", 5.0, 5.5), Word("again", 9.0, 9.5)]
-    monkeypatch.setattr(lecture2doc, "transcribe_words", lambda *a, **k: words)
+    monkeypatch.setattr(lecture2doc, "transcribe_clips", fake_stt(["hello", "world", "again"]))
     return video, pdf, pptx
 
 
@@ -58,7 +64,7 @@ def test_from_segments_skips_matching(tmp_path, monkeypatch):
     lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(out), "--workdir", str(tmp_path / "w"),
                       "--no-cleanup", "--from-segments", str(seg)])
     texts = [p.text for p in Document(out).paragraphs]
-    assert "hello world again" in texts
+    assert "hello" in texts  # one span, one clip
 
 
 def test_from_segments_rejects_unknown_slide(tmp_path, monkeypatch):
@@ -154,7 +160,7 @@ def test_transcribe_runtime_error_exits(tmp_path, monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("no audio stream")
 
-    monkeypatch.setattr(lecture2doc, "transcribe_words", boom)
+    monkeypatch.setattr(lecture2doc, "transcribe_clips", boom)
     with pytest.raises(SystemExit, match="no audio stream"):
         run(video, pdf, pptx, tmp_path, "--no-cleanup")
 
@@ -239,7 +245,7 @@ def test_transcribe_api_error_exits_without_traceback_or_key(tmp_path, monkeypat
             "invalid credentials",
             response=httpx2.Response(401, request=httpx2.Request("POST", "http://x")), body=None)
 
-    monkeypatch.setattr(lecture2doc, "transcribe_words", denied)
+    monkeypatch.setattr(lecture2doc, "transcribe_clips", denied)
     with pytest.raises(SystemExit) as exc_info:
         run(video, pdf, pptx, tmp_path, "--no-cleanup")
     msg = str(exc_info.value)
@@ -274,7 +280,7 @@ def test_normal_run_adds_time_subtitles(tmp_path, monkeypatch):
 def forbid_heavy_work(monkeypatch):
     def boom(*a, **k):
         raise AssertionError("heavy work during --rebuild")
-    for name in ("transcribe_words", "extract_frames", "match_frames", "probe_aspect", "load_config",
+    for name in ("transcribe_clips", "detect_silences", "extract_frames", "match_frames", "probe_aspect", "load_config",
                  "check_ffmpeg", "make_client", "build_glossary", "cleanup_spans"):
         monkeypatch.setattr(lecture2doc, name, boom)
 
@@ -355,42 +361,53 @@ def test_page_breaks_by_default_and_no_page_breaks_option(tmp_path, monkeypatch)
     assert flags(rebuilt) == [None, None, None]
 
 
-def snap_setup(tmp_path, monkeypatch):
-    """The lecturer clicks to the next slide (~t=4) while still finishing a sentence that ends at 4.6."""
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
-    words = [Word("done.", 0.5, 0.9), Word("Then", 3.1, 3.3), Word("more", 3.4, 3.6), Word("words", 3.7, 3.9),
-             Word("end.", 4.2, 4.6), Word("Next", 5.0, 5.4), Word("slide.", 5.6, 5.9)]
-    monkeypatch.setattr(lecture2doc, "transcribe_words", lambda *a, **k: words)
-    return video, pdf, pptx
+def silent_gap_setup(tmp_path, monkeypatch):
+    """The slides change at 4 s and 8 s, in the middle of the silent gaps 3-5 s and 7-9 s of the recording."""
+    monkeypatch.setenv("SCADS_API_KEY", "dummy")
+    pdf = make_pdf(tmp_path / "s.pdf", 3)
+    pptx = make_pptx(tmp_path / "s.pptx", [("Alpha", "a", False), ("Beta", "b", False), ("Gamma", "c", False)])
+    images, _ = render_pdf(pdf)
+    wav = make_wav(tmp_path / "a.wav", [("tone", 3.0), ("silence", 2.0), ("tone", 2.0), ("silence", 2.0),
+                                        ("tone", 3.0)])
+    video = make_video(images, [0] * 4 + [1] * 4 + [0] * 4, tmp_path / "gaps.mp4", audio=wav)
+    stt = fake_stt(["hello", "world", "again"])
+    monkeypatch.setattr(lecture2doc, "transcribe_clips", stt)
+    return video, pdf, pptx, stt
 
 
-def slide_paragraphs(path, number):
-    """Text paragraphs under the heading of the given slide."""
-    out, inside = [], False
-    for p in Document(path).paragraphs:
-        if p.style.name == "Heading 1":
-            inside = p.text.startswith(f"Slide {number} ")
-        elif inside and p.style.name == "Normal" and p.text:  # the thumbnail's paragraph has no text
-            out.append(re.sub(r"^\[[\d:]+\] ", "", p.text))
-    return out
-
-
-def test_sentence_tail_stays_with_its_slide_by_default(tmp_path, monkeypatch):
-    video, pdf, pptx = snap_setup(tmp_path, monkeypatch)
+def test_audio_is_cut_in_the_silent_gap_at_every_slide_change(tmp_path, monkeypatch, capsys):
+    video, pdf, pptx, stt = silent_gap_setup(tmp_path, monkeypatch)
     out = run(video, pdf, pptx, tmp_path, "--no-cleanup")
-    assert any(t.endswith("Then more words end.") for t in slide_paragraphs(out, 1))
-    assert slide_paragraphs(out, 2) == ["Next slide."]
+    assert [(round(c.start, 1), round(c.end, 1)) for c in stt.clips] == [(0.0, 4.0), (4.0, 8.0), (8.0, 12.0)]
+    assert [round(c.speech, 1) for c in stt.clips] == [3.0 + 0.0, 2.0, 3.0] or all(c.speech > 1.5 for c in stt.clips)
+    assert "2 of 2 slide changes cut in the silent gap" in capsys.readouterr().out
     seg = json.loads((tmp_path / "w" / "segments.json").read_text(encoding="utf-8"))
-    first, second = seg["spans"][0], seg["spans"][1]
-    assert first["end"] <= 5.0 and first["text_end"] > first["end"] - 1  # visual time stays on-screen time
-    assert first["text_end"] == second["text_start"] and 4.6 < first["text_end"] < 5.0
+    assert [(round(s["audio_start"], 1), round(s["audio_end"], 1)) for s in seg["spans"]] == [
+        (0.0, 4.0), (4.0, 8.0), (8.0, 12.0)]
+    assert [s["raw"] for s in seg["spans"]] == ["hello", "world", "again"]
+    assert [p.text for p in Document(out).paragraphs if p.style.name == "Normal" and p.text] == [
+        "hello", "world", "again"]
 
 
-def test_snap_seconds_zero_keeps_the_raw_cut(tmp_path, monkeypatch):
-    video, pdf, pptx = snap_setup(tmp_path, monkeypatch)
-    out = run(video, pdf, pptx, tmp_path, "--no-cleanup", "--snap-seconds", "0")
-    assert not any("end." in t for t in slide_paragraphs(out, 1))
-    assert slide_paragraphs(out, 2) == ["end. Next slide."]
+def test_without_a_silent_gap_the_cut_is_exactly_at_the_slide_change(tmp_path, monkeypatch, capsys):
+    video, pdf, pptx = setup(tmp_path, monkeypatch)  # a continuous tone: nothing to cut in
+    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    out = capsys.readouterr().out
+    assert "2 slide changes without a silent gap" in out and "cut in the silent gap" not in out
+    seg = json.loads((tmp_path / "w" / "segments.json").read_text(encoding="utf-8"))["spans"]
+    assert all(s["audio_start"] == pytest.approx(s["start"], abs=1e-3) and
+               s["audio_end"] == pytest.approx(s["end"], abs=1e-3) for s in seg)
+
+
+def test_silence_detection_failure_degrades_to_cutting_at_the_slide_changes(tmp_path, monkeypatch, caplog):
+    video, pdf, pptx = setup(tmp_path, monkeypatch)
+
+    def broken(media):
+        raise RuntimeError("silence detection failed")
+
+    monkeypatch.setattr(lecture2doc, "detect_silences", broken)
+    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    assert "cutting exactly at the slide changes" in caplog.text
 
 
 def numbered_setup(tmp_path, monkeypatch):
@@ -401,8 +418,7 @@ def numbered_setup(tmp_path, monkeypatch):
     images, _ = render_pdf(pdf, width=960)
     order = [0] * 4 + [animation_state(images[1])] * 4 + [2] * 4 + [animation_state(images[3])] * 4
     video = make_video(images, order, tmp_path / "num.mp4", size=(960, 540))
-    words = [Word("one", 1.0, 1.4), Word("two", 5.0, 5.4), Word("three", 9.0, 9.4), Word("four", 13.0, 13.4)]
-    monkeypatch.setattr(lecture2doc, "transcribe_words", lambda *a, **k: words)
+    monkeypatch.setattr(lecture2doc, "transcribe_clips", fake_stt(["one", "two", "three", "four"]))
     return video, pdf, pptx
 
 

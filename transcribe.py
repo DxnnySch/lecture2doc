@@ -1,164 +1,105 @@
-"""Speech-to-text via the ScaDS.AI endpoint: chunked audio -> timestamped words -> text per slide span."""
+"""Speech to text, one request per slide clip.
+
+The audio of every stretch on one slide is cut out (at the silent gaps between the slides' recordings, see
+audiocuts.py) and transcribed on its own, so each word belongs to exactly one slide by construction. Nothing depends
+on word timestamps, which the service only estimates."""
 from __future__ import annotations
 
 import json
-import logging
 import subprocess
 import tempfile
-from dataclasses import asdict, dataclass
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-from openai import BadRequestError
 
 from api import make_client, retry_call
 from fsutil import atomic_write_json
 
-log = logging.getLogger(__name__)
+MIN_SPEECH = 0.5  # seconds: a clip with less speech than this is not sent (silence makes the model hallucinate)
 
 
-@dataclass
-class Word:
-    w: str
-    start: float
-    end: float
-
-
-def split_audio(video, out_dir: Path, chunk_seconds: int = 300) -> list[tuple[Path, float]]:
-    out_dir.mkdir(parents=True, exist_ok=True)
+def extract_clip(media, start: float, end: float, out_path) -> None:
+    """Cut [start, end] seconds of the audio of `media` into a small 16 kHz mono mp3."""
+    cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(media),
+           "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k", str(out_path)]
     try:
-        subprocess.run(
-            ["ffmpeg", "-v", "error", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k",
-             "-f", "segment", "-segment_time", str(chunk_seconds), "-reset_timestamps", "1",
-             str(out_dir / "chunk%03d.mp3")],
-            check=True,
-            capture_output=True,
-        )
+        subprocess.run(cmd, capture_output=True, check=True)
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
-        # Get last ~500 chars of stderr
-        error_snippet = stderr[-500:] if len(stderr) > 500 else stderr
-        raise RuntimeError(f"audio extraction failed: {error_snippet}") from e
-
-    files = sorted(out_dir.glob("chunk*.mp3"))
-    if not files:
-        raise RuntimeError(f"no audio extracted from {video}")
-    return [(f, float(i * chunk_seconds)) for i, f in enumerate(files)]
+        raise RuntimeError(f"cutting the audio clip {start:.1f}-{end:.1f}s failed: {stderr[-500:]}") from e
 
 
-def _get(obj, key):
-    return obj[key] if isinstance(obj, dict) else getattr(obj, key)
-
-
-def estimate_words(segments: list[tuple[float, float, str]]) -> list[Word]:
-    """Spread each segment's words evenly over its time range."""
-    out = []
-    for start, end, text in segments:
-        tokens = text.split()
-        if not tokens:
-            continue
-        step = (end - start) / len(tokens)
-        out.extend(Word(t, start + i * step, start + (i + 1) * step) for i, t in enumerate(tokens))
-    return out
-
-
-def parse_response(result, offset: float, chunk_seconds: float) -> list[Word]:
-    words = [
-        Word(_get(w, "word").strip(), _get(w, "start") + offset, _get(w, "end") + offset)
-        for w in (getattr(result, "words", None) or [])
-        if _get(w, "word").strip()
-    ]
-    if words:
-        return words
-    segments = getattr(result, "segments", None) or []
-    if segments:
-        return estimate_words([(_get(s, "start") + offset, _get(s, "end") + offset, _get(s, "text")) for s in segments])
-    text = (getattr(result, "text", "") or "").strip()
-    return estimate_words([(offset, offset + chunk_seconds, text)]) if text else []
-
-
-def _transcribe_chunk(client, model: str, path: Path, language: str | None):
+def _transcribe(client, model: str, path, language: str | None, limiter) -> str:
     kwargs = {"language": language} if language else {}
 
-    def call(extra):
+    def call():
+        if limiter is not None:
+            limiter.wait()  # every attempt, including retries, counts against the quota
         with open(path, "rb") as f:
-            return client.audio.transcriptions.create(
-                model=model, file=f, response_format="verbose_json", **extra, **kwargs
-            )
+            return client.audio.transcriptions.create(model=model, file=f, response_format="verbose_json", **kwargs)
 
-    try:
-        return retry_call(lambda: call({"timestamp_granularities": ["word", "segment"]}))
-    except BadRequestError as e:  # gateway rejected word timestamps
-        log.warning("word timestamps not supported, falling back: %s", e.message)
-        return retry_call(lambda: call({}))
+    result = retry_call(call)
+    text = result.get("text") if isinstance(result, dict) else getattr(result, "text", "")
+    return (text or "").strip()
 
 
-def transcribe_words(cfg, video, cache_path: Path, language: str | None = None,
-                     chunk_seconds: int = 300, client=None) -> list[Word]:
-    cache_path = Path(cache_path)
-    video = Path(video)
-    video_size = video.stat().st_size
-
-    # Check cache validity
-    if cache_path.exists():
-        try:
-            cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
-            if isinstance(cache_data, dict) and "meta" in cache_data and "words" in cache_data:
-                meta = cache_data["meta"]
-                if isinstance(meta, dict) and (meta.get("video") == video.name and
-                    meta.get("size") == video_size and
-                    meta.get("language") == language and
-                    meta.get("chunk_seconds") == chunk_seconds):
-                    return [Word(**d) for d in cache_data["words"]]
-        except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
-            pass  # Cache is corrupt, treat as a miss
-
-    meta = {"video": video.name, "size": video_size, "language": language, "chunk_seconds": chunk_seconds}
-    chunks_path = cache_path.with_name(cache_path.name + ".chunks.json")
-    done = _load_chunk_cache(chunks_path, meta)
-
-    client = client or make_client(cfg)
-    with tempfile.TemporaryDirectory() as tmp:
-        chunks = split_audio(video, Path(tmp), chunk_seconds)
-        for i, (path, offset) in enumerate(chunks):
-            if i in done:
-                print(f"  chunk {i + 1}/{len(chunks)} cached", flush=True)
-                continue
-            print(f"  transcribing chunk {i + 1}/{len(chunks)}", flush=True)
-            done[i] = parse_response(_transcribe_chunk(client, cfg.stt_model, path, language), offset, chunk_seconds)
-            atomic_write_json(chunks_path, {
-                "meta": meta,
-                "chunks": {str(k): [asdict(w) for w in v] for k, v in done.items()},
-            })
-        words = [w for i in range(len(chunks)) for w in done.get(i, [])]
-
-    if not words:
-        raise RuntimeError("transcription returned no words")
-
-    atomic_write_json(cache_path, {"meta": meta, "words": [asdict(w) for w in words]})
-    chunks_path.unlink(missing_ok=True)
-    return words
-
-
-def _load_chunk_cache(path: Path, meta: dict) -> dict[int, list[Word]]:
-    """Chunks transcribed by an earlier, interrupted run (empty if absent, corrupt or for other settings)."""
-    if not path.exists():
-        return {}
+def _load_cache(path: Path, meta: dict) -> dict[str, str]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or data.get("meta") != meta:
-            return {}
-        return {int(k): [Word(**d) for d in v] for k, v in data["chunks"].items()}
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError, AttributeError):
-        return {}
+        clips = data["clips"]
+        if data["meta"] == meta and isinstance(clips, dict):
+            return {k: v for k, v in clips.items() if isinstance(v, str)}
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return {}
 
 
-def assign_words(words: list[Word], spans) -> list[str]:
-    """Text per span. A word belongs to the span containing its midpoint; strays go to the first/last span."""
-    if not spans:
-        return []
-    buckets: list[list[str]] = [[] for _ in spans]
-    for w in words:
-        mid = (w.start + w.end) / 2
-        idx = next((i for i, s in enumerate(spans) if mid < s.end), len(spans) - 1)
-        buckets[idx].append(w.w)
-    return [" ".join(b) for b in buckets]
+def transcribe_clips(cfg, media, clips, cache_path, language: str | None = None, client=None, limiter=None,
+                     workers: int = 4) -> list[str]:
+    """The text of every clip (a list as long as `clips`; "" for clips without speech).
+
+    Finished clips are cached at once, so a failed or interrupted run only repeats the clips still missing. The
+    first error (an API error, ffmpeg failing) stops the remaining work and is raised."""
+    cache_path = Path(cache_path)
+    meta = {"video": Path(media).name, "size": Path(media).stat().st_size, "language": language}
+    done = _load_cache(cache_path, meta)
+    texts = [""] * len(clips)
+    todo = []
+    for i, clip in enumerate(clips):
+        if clip.speech < MIN_SPEECH:
+            continue
+        key = f"{clip.start:.2f}-{clip.end:.2f}"
+        if key in done:
+            texts[i] = done[key]
+        else:
+            todo.append((i, key))
+    if not todo:
+        return texts
+    client = client or make_client(cfg)
+    lock, stop, errors, finished = threading.Lock(), threading.Event(), [], [0]
+    with tempfile.TemporaryDirectory() as tmp:
+        def work(item):
+            i, key = item
+            if stop.is_set():
+                return
+            try:
+                path = Path(tmp) / f"clip_{i}.mp3"
+                extract_clip(media, clips[i].start, clips[i].end, path)
+                text = _transcribe(client, cfg.stt_model, path, language, limiter)
+            except BaseException as exc:  # reported once all workers have stopped
+                with lock:
+                    errors.append(exc)
+                stop.set()
+                return
+            with lock:
+                texts[i] = text
+                done[key] = text
+                atomic_write_json(cache_path, {"meta": meta, "clips": done})
+                finished[0] += 1
+                print(f"  transcribed clip {finished[0]}/{len(todo)}", flush=True)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(work, todo))
+    if errors:
+        raise errors[0]
+    return texts

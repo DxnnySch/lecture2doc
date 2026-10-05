@@ -2,7 +2,7 @@
 
 Turns a lecture video plus its slides (PDF export and PPTX) into a Word document with one section per slide: the slide title, a thumbnail, and what the lecturer said while that slide was on screen. Speech-to-text and transcript cleanup run through the ScaDS.AI OpenAI-compatible API.
 
-How it works: video frames are sampled and matched against the PDF pages to find which slide is shown when (4:3 slides shown pillarboxed in a 16:9 recording are handled); the audio is transcribed in chunks with word timestamps; each word is assigned to the slide visible at that moment; an LLM then fixes recognition errors using a glossary built from the slide text (with guardrails that fall back to the raw text if the output deviates too much).
+How it works: video frames are sampled and matched against the PDF pages to find which slide is shown when (4:3 slides shown pillarboxed in a 16:9 recording are handled, and the page number in the corner of the video identifies half-built animated slides); the audio is cut at every slide change and the audio of each stretch on one slide is transcribed on its own, so every word belongs to exactly one slide; an LLM then fixes recognition errors using a glossary built from the slide text (with guardrails that fall back to the raw text if the output deviates too much).
 
 ## Setup
 
@@ -31,7 +31,7 @@ The PDF supplies the page images used for matching; the PPTX supplies slide titl
 
 The document has one page per stretch of the lecture on one slide, in lecture order. Each page has a heading (`Slide N – Title`), a subtitle line with the time range it was on screen in the video (e.g. `12:30 – 15:02`), the slide's thumbnail and the transcript of that stretch. If the lecturer goes 24 → 25 → 24 → 23 → 26, that is five pages in exactly that order, even though slide 24 appears twice. Slides that were never shown get no page. With `--group-by-slide` the document instead has one section per slide of the deck, in slide order, with all visits of a slide together (time-stamped paragraphs).
 
-Intermediate files go to the work directory (default `output/<video stem>/`): `words.json` (STT cache, so reruns are free; progress is also cached per chunk in `words.json.chunks.json`, so a failed run resumes where it stopped), `llm_cache.json` (cleanup cache), and `segments.json`.
+Intermediate files go to the work directory (default `output/<video stem>/`): `clips.json` (speech-to-text cache, one entry per audio clip and saved as soon as the clip is done, so reruns are free and a failed run resumes where it stopped), `llm_cache.json` (cleanup cache), and `segments.json`.
 
 ### Options
 
@@ -52,29 +52,30 @@ Intermediate files go to the work directory (default `output/<video stem>/`): `w
 | `--threshold` | minimum match score for a frame to count (default 0.6) |
 | `--smooth` | majority-vote window in frames (default 5) |
 | `--no-slide-numbers` | do not use the page number in the corner of the video to identify slides (see below) |
-| `--snap-seconds` | move a slide change that falls inside a sentence to the nearer end of that sentence if it is at most this many seconds away (default 4, `0` = cut exactly at the slide change) |
 
-A summary after matching lists seconds matched per slide, the unmatched percentage, and slides never shown. Many unmatched seconds or flicker between neighbouring slides: tune `--threshold` (0.5-0.8) and `--smooth` (3-9); this reruns quickly because STT is cached.
+A summary after matching lists seconds matched per slide, the unmatched percentage, and slides never shown. Many unmatched seconds or flicker between neighbouring slides: tune `--threshold` (0.5-0.8) and `--smooth` (3-9); this reruns quickly because the transcription is cached.
 
 ## Correct-and-regenerate workflow
 
-`segments.json` holds every span (`slide`, `start`, `end`, `confidence`, `raw`, `clean`). If a slide assignment is wrong, edit the `slide`/`start`/`end` values and regenerate with the corrected spans:
+`segments.json` holds every span (`slide`, `start`, `end`, `confidence`, `audio_start`, `audio_end`, `raw`, `clean`). `start`/`end` are when the slide was on screen; `audio_start`/`audio_end` are where the audio was cut for its transcript. If a slide assignment is wrong, edit the `slide`/`start`/`end` values and regenerate with the corrected spans:
 
 ```bash
 .venv/Scripts/python lecture2doc.py VIDEO.mp4 SLIDES.pdf SLIDES.pptx --from-segments output/<stem>/segments.json
 ```
 
-Words are re-assigned to the edited spans using the cached `words.json`.
+The audio is cut again at the edited times; only the clips whose cut times changed are transcribed again (and cleaned again by the LLM), everything else comes from the caches.
 
 ## How slides are recognised
 
 Every video frame is compared with the PDF pages. Slides that are built up by animation are the weak spot of that: a half-built slide hardly resembles its finished PDF page and may look more like another, emptier page. So, when the PDF prints page numbers (usually bottom right), the tool also compares the number area of each frame with the number area of every PDF page (no OCR; the PDF supplies how the numbers look). Where the corner clearly shows a page's number, that page wins over the whole-slide match; pages that print the same number are told apart by the picture. If the PDF has no usable page numbers, or the corner is not visible, matching falls back to whole slides. The matching summary says how many frames the number could be read in and how many frames it changed. `--no-slide-numbers` switches this off. It costs one more pass over the video.
 
-## Where the text is cut between slides
+## How the transcript is split between slides
 
-A lecturer rarely clicks to the next slide exactly between two sentences, so cutting the transcript at the exact click would put the last words of a sentence on the next slide. After matching, every cut that falls inside a sentence is moved to the nearer end of that sentence (sentence ends come from the punctuation of the transcript; common abbreviations such as `e.g.`, `z.B.`, `Dr.` do not count), as long as that is at most `--snap-seconds` away and no slide is left shorter than a second. The time ranges shown under the slide headings are not affected: they stay the real on-screen times, while `segments.json` records where the text was cut as `text_start`/`text_end`.
+The lectures are recorded slide by slide, so at every slide change the audio has a silent gap between two recordings (in the sample lecture a median of 2.5 s, against 0.2 s for ordinary pauses). After matching, the tool finds these gaps with ffmpeg's silence detector and cuts the audio in the middle of the longest gap (at least 0.5 s) within 3 seconds of every slide change. Each stretch on one slide is transcribed separately, so a sentence can never be split between two slides and nothing depends on word timestamps (the speech-to-text service only estimates those, evenly spread over each phrase, so they can put words on the wrong side of a slide change).
 
-This is applied when the text is assigned to slides, so a finished run needs `--from-segments` (not `--rebuild`) to pick it up: that reuses the saved slide times and the STT cache and only sends the spans whose text changed to the LLM again.
+If a slide change has no silent gap nearby, as in a lecture recorded in one go, that change is cut exactly at the detected slide change and the summary says so: a word spoken right at such a change may then land on the neighbouring slide. A clip with less than half a second of speech is not sent to the speech-to-text service at all (silence makes the model invent text), and it gets an empty transcript.
+
+The speech-to-text requests share the `SCADS_REQUESTS_PER_MINUTE` quota with the LLM requests, and each finished clip is cached at once.
 
 ## Rebuild the document offline
 

@@ -18,7 +18,7 @@ import openai
 
 from api import RateLimiter, make_client
 from cleanup import LLMCache, build_glossary, build_outline, cleanup_spans
-from align import snap_to_sentences
+from audiocuts import CutReport, detect_silences, plan_cuts
 from config import ConfigError, check_ffmpeg, load_config
 from docx_out import SpanText, write_docx
 from pagenumbers import (NumberEvidence, extract_strips, find_number_region, number_templates,
@@ -26,7 +26,7 @@ from pagenumbers import (NumberEvidence, extract_strips, find_number_region, num
 from segment import (Span, absorb_unmatched, build_spans, extract_frames, match_frames, probe_aspect,
                      slide_features, smooth, unmatched_seconds)
 from slides import load_slides
-from transcribe import assign_words, transcribe_words
+from transcribe import transcribe_clips
 
 log = logging.getLogger(__name__)
 
@@ -60,10 +60,6 @@ def parse_args(argv):
                    help="do not use the page number in the corner of the video to identify slides (by default it "
                         "is used when the PDF prints page numbers, so half-built animated slides are not mistaken "
                         "for other slides)")
-    p.add_argument("--snap-seconds", type=float, default=4.0,
-                   help="move a slide change that falls inside a sentence to the nearer end of that sentence if it "
-                        "is at most this many seconds away, so a sentence is not split between two slides "
-                        "(default 4, 0 = cut exactly at the slide change)")
     return p.parse_args(argv)
 
 
@@ -140,6 +136,19 @@ def read_slide_numbers(pdf, video, interval: float, n_frames: int) -> NumberEvid
         mask = np.vstack([mask, np.zeros((n_frames - len(mask), mask.shape[1]), bool)])
         score = np.concatenate([score, np.zeros(n_frames - len(score))])
     return NumberEvidence(mask, score)
+
+
+def print_cut_summary(report: CutReport) -> None:
+    total = report.in_silence + report.at_video_change
+    if not total:
+        return
+    if report.in_silence:
+        gaps = sorted(report.gap_lengths)
+        print(f"  {report.in_silence} of {total} slide changes cut in the silent gap between the recordings "
+              f"(gap length median {gaps[len(gaps) // 2]:.1f}s, shortest {gaps[0]:.1f}s)")
+    if report.at_video_change:
+        print(f"  {report.at_video_change} slide changes without a silent gap: cut exactly at the detected change "
+              f"(a word right at such a change may land on the neighbouring slide)")
 
 
 def check_inputs(args) -> None:
@@ -225,15 +234,22 @@ def main(argv=None) -> int:
         except ValueError as exc:
             raise SystemExit(str(exc)) from None
 
+    print("Cutting the audio at the slide changes...")
+    try:
+        silences = detect_silences(video)
+    except RuntimeError as exc:
+        log.warning("%s; cutting exactly at the slide changes", exc)
+        silences = []
+    clips, cut_report = plan_cuts(spans, silences)
+    print_cut_summary(cut_report)
+    limiter = RateLimiter(cfg.requests_per_minute)  # one quota for the speech-to-text, glossary and cleanup requests
     print("Transcribing...")
     try:
-        words = transcribe_words(cfg, video, workdir / "words.json", args.language)
+        raws = transcribe_clips(cfg, video, clips, workdir / "clips.json", args.language, limiter=limiter)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from None
     except openai.APIError as exc:
         raise SystemExit(f"speech-to-text failed: {exc}") from None
-    text_spans = snap_to_sentences(words, spans, args.snap_seconds)  # where the text is cut; spans keep screen times
-    raws = assign_words(words, text_spans)
 
     if args.no_cleanup:
         cleans = raws
@@ -241,7 +257,6 @@ def main(argv=None) -> int:
         print("Cleaning up transcripts...")
         client = make_client(cfg)
         cache = LLMCache(workdir / "llm_cache.json")
-        limiter = RateLimiter(cfg.requests_per_minute)  # one shared quota for the glossary and all cleanup calls
         outline = build_outline(slides)
         glossary = build_glossary(client, cfg.glossary_model, slides, cache, limiter=limiter)
         cleans = cleanup_spans(client, cfg.llm_model, glossary, outline, slides, spans, raws, cache, limiter=limiter)
@@ -249,8 +264,8 @@ def main(argv=None) -> int:
     (workdir / "segments.json").write_text(json.dumps({
         "video": str(video),
         "spans": [{"slide": s.slide, "start": s.start, "end": s.end, "confidence": round(s.confidence, 3),
-                   "text_start": t.start, "text_end": t.end, "raw": r, "clean": c}
-                  for s, t, r, c in zip(spans, text_spans, raws, cleans)],
+                   "audio_start": round(k.start, 3), "audio_end": round(k.end, 3), "raw": r, "clean": c}
+                  for s, k, r, c in zip(spans, clips, raws, cleans)],
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     write_docx(out, video.stem, slides,

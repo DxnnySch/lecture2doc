@@ -44,7 +44,8 @@ import subprocess
 from PIL import Image
 
 
-def make_video(images, order, path: Path, fps: int = 1, pillarbox_4_3: bool = False, size=(320, 180)) -> Path:
+def make_video(images, order, path: Path, fps: int = 1, pillarbox_4_3: bool = False, size=(320, 180),
+               audio: Path | None = None) -> Path:
     """One frame per entry of `order`: an index into images, an image itself, or None for a black frame."""
     vw, vh = size
     frames = path.parent / (path.stem + "_frames")
@@ -63,7 +64,7 @@ def make_video(images, order, path: Path, fps: int = 1, pillarbox_4_3: bool = Fa
     seconds = len(order) / fps
     subprocess.run(
         ["ffmpeg", "-v", "error", "-y", "-framerate", str(fps), "-i", str(frames / "f%03d.png"),
-         "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+         *(["-i", str(audio)] if audio else ["-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}"]),
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(fps), "-c:a", "aac", "-shortest", str(path)],
         check=True,
     )
@@ -76,3 +77,22 @@ def animation_state(image):
     state = Image.new("RGB", (w, h), "white")
     state.paste(image.crop((0, int(h * 0.87), w, h)), (0, int(h * 0.87)))
     return state
+
+
+def make_wav(path: Path, pieces, rate: int = 16000) -> Path:
+    """Audio from pieces like [("tone", 2.0), ("silence", 1.5)]: a loud 440 Hz tone or digital silence."""
+    import wave
+
+    parts = []
+    for kind, seconds in pieces:
+        n = int(seconds * rate)
+        if kind == "tone":
+            parts.append((0.5 * 32767 * np.sin(2 * np.pi * 440 * np.arange(n) / rate)).astype(np.int16))
+        else:
+            parts.append(np.zeros(n, np.int16))
+    with wave.open(str(path), "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(rate)
+        f.writeframes(np.concatenate(parts).tobytes())
+    return path
