@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -153,17 +155,45 @@ def save_glossary(folder, text: str) -> None:
     path.write_text("\n".join(terms) + ("\n" if terms else ""), encoding="utf-8")
 
 
+def _read_pdfs(paths) -> list:
+    """The pages of every PDF (None for an unreadable one). Reading takes a while, so it is done in worker
+    processes: in parallel, and without holding up the browser UI that runs in this process."""
+    def read_here(path):
+        try:
+            return pdf_pages(path)
+        except Exception as exc:  # an unreadable PDF must not block the others
+            log.warning("skipping %s for the glossary (%s)", path.name, exc)
+            return None
+
+    if len(paths) < 2:
+        return [read_here(p) for p in paths]
+    try:
+        with ProcessPoolExecutor(max_workers=min(8, len(paths))) as pool:
+            futures = [pool.submit(pdf_pages, p) for p in paths]
+            results = []
+            for path, future in zip(paths, futures):
+                try:
+                    results.append(future.result())
+                except BrokenProcessPool:
+                    raise
+                except Exception as exc:
+                    log.warning("skipping %s for the glossary (%s)", path.name, exc)
+                    results.append(None)
+            return results
+    except (BrokenProcessPool, OSError) as exc:  # no worker processes here: read one after the other
+        log.warning("cannot use worker processes (%s); reading the PDFs one by one", exc)
+        return [read_here(p) for p in paths]
+
+
 def folder_slides(folder) -> list[SimpleNamespace]:
     """The text of every slide of every PDF in the folder (what the glossary is built from).
 
     A line that was already seen on an earlier slide (footers, repeated headings, agendas) is left out: the glossary
     only needs every term once, and a folder of decks is large."""
     slides, seen = [], set()
-    for path in sorted(Path(folder).glob("*.pdf"), key=lambda p: p.name.lower()):
-        try:
-            pages = pdf_pages(path)
-        except Exception as exc:  # an unreadable PDF must not block the others
-            log.warning("skipping %s for the glossary (%s)", path.name, exc)
+    paths = sorted(Path(folder).glob("*.pdf"), key=lambda p: p.name.lower())
+    for path, pages in zip(paths, _read_pdfs(paths)):
+        if pages is None:
             continue
         for number, (title, text) in enumerate(pages, 1):
             lines = []
@@ -185,12 +215,13 @@ def make_glossary(folder, client=None, cfg=None, cache=None, limiter=None, on_pr
             cfg = load_config()  # no ffmpeg needed for this
         except ConfigError as exc:
             raise PipelineError(str(exc)) from None
+    total = len(list(Path(folder).glob("*.pdf")))
+    if on_progress is not None:
+        on_progress(0, total, 0, 0)  # known at once: the page shows "N PDFs found" while they are being read
     slides = folder_slides(folder)
     if not slides:
         raise PipelineError(f"no readable PDF found in {folder}")
     total = len({s.deck for s in slides})
-    if on_progress is not None:
-        on_progress(0, total, 0, 0)
     text = build_glossary(client or _llm(cfg), cfg.glossary_model, slides, cache or LLMCache(None),
                           limiter=limiter or RateLimiter(cfg.requests_per_minute),
                           on_progress=(lambda done, n, decks: on_progress(decks, total, done, n))

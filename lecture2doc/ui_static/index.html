@@ -342,11 +342,12 @@ function render() {
   $("found").textContent = S.lectures.length ? `${S.lectures.length} video${S.lectures.length > 1 ? "s" : ""} found` : "";
   updateLectures();
 }
-async function poll() { try { S = await api("/api/state"); render(); } catch (e) { $("total").textContent = "Lost connection to lecture2doc. Is it still running?"; } }
+async function poll() { try { S = await api("/api/state"); if (pendingBuild && !S.glossary.building) S.glossary.building = true; render(); } catch (e) { $("total").textContent = "Lost connection to lecture2doc. Is it still running?"; } }
 poll(); setInterval(poll, 1000);
 
 /* ---------- glossary section ---------- */
 let gSig = "";
+let pendingBuild = false;
 function renderGlossaryCard() {
   const g = S.glossary;
   $("glossary-card").hidden = !S.settings.options.cleanup;
@@ -358,7 +359,10 @@ function renderGlossaryCard() {
       const b = el("button", { className: primary ? "primary" : "", textContent: label });
       b.addEventListener("click", () => {
         if (g.exists && !confirm("Rebuild the glossary from the slides of all PDFs in the folder? Your edits are lost.")) return;
-        api("/api/glossary/build", {}).then(poll, fail);
+        pendingBuild = true;  // show the progress at once, do not wait for the server
+        S.glossary = { ...g, building: true, error: null, progress: { decks_done: 0, decks_total: 0, parts_done: 0, parts_total: 0 } };
+        renderGlossaryCard();
+        api("/api/glossary/build", {}).catch(fail).finally(() => { pendingBuild = false; poll(); });
       });
       return b;
     };
