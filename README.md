@@ -67,21 +67,21 @@ If you did not activate the environment, call its Python directly instead: `.ven
 
 The AI cleanup fixes speech-recognition errors with the help of a glossary: the terms, names and acronyms found on the slides. Technical terms are exactly what speech recognition gets wrong, so a good glossary gives a better transcript.
 
-- Press **Glossary** on a lecture. The first time, it is built from the slide text (a few seconds). Then you can **edit** any term, **remove** wrong ones with ✕, **add** missing ones (type and press Enter), and filter the list. **Save glossary** stores it for this lecture.
+- Press **Glossary** on a lecture. The first time, it is built from the slide text (a few seconds). Then you can **edit** any term, **remove** wrong ones with ✕, **add** missing ones (type and press Enter), and filter the list. **Save glossary** stores it. The glossary belongs to the slide PDF and is kept in the PDF folder (`.lecture2doc/<pdf name>.glossary.txt`), so it is built only once and every lecture that uses that PDF shares it.
 - Press **Process selected** again. Nothing that is already done is repeated: the slide matching and the speech-to-text are kept, and only the AI cleanup runs again with your glossary. A rerun after a glossary edit therefore takes only as long as the cleanup step instead of a full run.
 - Changed only a document option (thumbnails, time stamps, ...)? Use **Rebuild file**: the document is made again from the saved transcript in seconds, without video or internet.
-- **Start over** deletes everything saved for a lecture (transcript, glossary, caches) so the next run begins from scratch.
+- **Start over** deletes everything saved for a lecture (transcript and caches) so the next run begins from scratch. The glossary of its PDF is kept.
 
 An interrupted or failed run (closed browser, lost connection, rate limit) also continues where it stopped when you press **Process selected** again.
 
 ### Where the files go
 
-For a video called `week3.mp4` and the output folder `out`:
+For a video called `week3.mp4` with the slides `week3.pdf`, and the output folder `out`:
 
 | File | Meaning |
 | --- | --- |
 | `out/week3.docx` | the Word document |
-| `out/.lecture2doc/week3/glossary.txt` | the glossary, one term per line (you can also edit it by hand) |
+| `<PDF folder>/.lecture2doc/week3.glossary.txt` | the glossary of the PDF, one term per line (you can also edit it by hand) |
 | `out/.lecture2doc/week3/segments.json` | which slide was shown when, with the raw and cleaned text |
 | `out/.lecture2doc/week3/matching.json`, `clips.json`, `llm_cache.json` | caches of the slide matching, the speech-to-text and the AI cleanup, so reruns are cheap |
 
@@ -132,7 +132,7 @@ The same pipeline without the interface, for scripts and fine tuning:
 python -m lecture2doc VIDEO.mp4 SLIDES.pdf -o lecture.docx
 ```
 
-Without arguments, `python -m lecture2doc` starts the interface. Intermediate files go to the work directory (default `output/<video stem>/`) and are the same as listed above, including `glossary.txt`: edit it between runs to change the glossary.
+Without arguments, `python -m lecture2doc` starts the interface. Intermediate files go to the work directory (default `output/<video stem>/`) and are the same as listed above. The glossary is saved next to the PDF (`.lecture2doc/<pdf name>.glossary.txt`): edit it between runs to change the glossary.
 
 | Option | Meaning |
 | --- | --- |

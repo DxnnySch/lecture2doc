@@ -18,6 +18,12 @@ def test_a_video_is_paired_with_the_pdf_of_the_same_name():
     assert ui.pair_pdf("x", []) is None
 
 
+def test_files_are_listed_in_natural_order_ignoring_case(tmp_path):
+    for name in ("L-GDI-10.mp4", "L-Gdi-2.mp4", "l-gdi-1.mp4", "L-GDI-2-b.mp4", "x.txt"):
+        (tmp_path / name).write_bytes(b"x")
+    assert ui.list_files(str(tmp_path), {".mp4"}) == ["l-gdi-1.mp4", "L-GDI-2-b.mp4", "L-Gdi-2.mp4", "L-GDI-10.mp4"]
+
+
 def test_a_video_named_by_its_number_finds_the_pdf_that_continues_its_name():
     pdfs = ["L-GDI-5-Methods-1-Architectures.pdf", "L-GDI-5-Methods-3-Encoding.pdf"]
     assert ui.pair_pdf("L-Gdi-5-Methods-1", pdfs) == "L-GDI-5-Methods-1-Architectures.pdf"
@@ -37,9 +43,9 @@ def app(tmp_path):
     return a
 
 
-def test_lectures_lists_videos_with_their_pdf_and_lets_the_user_override(app):
+    assert list(rows) == ["one.mp4", "Two.MKV"]  # natural order, ignoring case
     rows = {r["video"]: r for r in app.lectures()}
-    assert sorted(rows) == ["Two.MKV", "one.mp4"]
+    assert sorted(rows) == ["one.mp4", "Two.MKV"]
     assert rows["one.mp4"]["pdf"] == "one.pdf" and rows["Two.MKV"]["pdf"] == "two.pdf"
     app.set_pair("one.mp4", "two.pdf")
     assert {r["video"]: r["pdf"] for r in app.lectures()}["one.mp4"] == "two.pdf"
@@ -110,14 +116,20 @@ def test_a_video_without_slides_is_not_started(app):
     assert app.jobs["one.mp4"]["status"] == "error" and "No slide PDF" in app.jobs["one.mp4"]["error"]
 
 
-def test_glossary_is_saved_per_lecture_and_read_back(app, monkeypatch):
+def test_the_glossary_belongs_to_the_pdf_and_is_built_only_once(app, tmp_path, monkeypatch):
+    built = []
+    monkeypatch.setattr(pipeline, "make_glossary", lambda pdf: built.append(pdf.name) or "fresh")
+    assert app.glossary("one.mp4") == "fresh" and built == ["one.pdf"]
     app.save_glossary("one.mp4", "alpha\n\n beta \n")
-    assert app.glossary("one.mp4") == "alpha\nbeta\n"
+    assert app.glossary("one.mp4") == "alpha\nbeta\n" and built == ["one.pdf"]  # read from the file now
+    assert (tmp_path / "pdf" / ".lecture2doc" / "one.glossary.txt").is_file()
+    # another video using the same PDF sees the same glossary
+    app.set_pair("Two.MKV", "one.pdf")
+    assert app.glossary("Two.MKV") == "alpha\nbeta\n"
     assert [r for r in app.lectures() if r["video"] == "one.mp4"][0]["has_glossary"] is True
-    monkeypatch.setattr(pipeline, "make_glossary", lambda pdf, work: "fresh")
-    assert app.glossary("one.mp4", generate=True) == "fresh"
-    app.reset("one.mp4")
-    assert [r for r in app.lectures() if r["video"] == "one.mp4"][0]["has_glossary"] is False
+    assert app.glossary("one.mp4", generate=True) == "fresh" and built == ["one.pdf", "one.pdf"]
+    app.reset("one.mp4")  # starting over keeps the glossary of the PDF
+    assert [r for r in app.lectures() if r["video"] == "one.mp4"][0]["has_glossary"] is True
 
 
 @pytest.fixture
@@ -147,7 +159,7 @@ def test_the_page_and_the_state_are_served(server):
     assert status == 200 and b"lecture2doc" in page
     status, data = call(server, "/api/state")
     state = json.loads(data)
-    assert status == 200 and [l["video"] for l in state["lectures"]] == ["Two.MKV", "one.mp4"]
+    assert status == 200 and [l["video"] for l in state["lectures"]] == ["one.mp4", "Two.MKV"]
 
 
 def test_requests_from_other_websites_are_refused(server):

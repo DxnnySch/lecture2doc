@@ -519,8 +519,8 @@ def test_the_first_run_saves_the_glossary_and_later_runs_use_the_edited_one(tmp_
 
     monkeypatch.setattr(pipeline, "cleanup_spans", fake_cleanup)
     run(video, pdf, tmp_path)
-    assert (tmp_path / "w" / "glossary.txt").read_text(encoding="utf-8") == "alpha\nbeta\n"
-    pipeline.save_glossary(tmp_path / "w", "alpha\n\n  gamma  \n")  # the user edits it
+    assert (tmp_path / ".lecture2doc" / "s.glossary.txt").read_text(encoding="utf-8") == "alpha\nbeta\n"
+    pipeline.save_glossary(pdf, "alpha\n\n  gamma  \n")  # the user edits it
     run(video, pdf, tmp_path)
     assert built == [1] and used == ["alpha\nbeta", "alpha\ngamma\n"]
 

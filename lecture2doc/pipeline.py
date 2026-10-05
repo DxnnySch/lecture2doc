@@ -23,7 +23,7 @@ from lecture2doc.transcribe import transcribe_clips
 
 log = logging.getLogger(__name__)
 
-GLOSSARY_FILE = "glossary.txt"
+GLOSSARY_DIR = ".lecture2doc"
 
 
 class PipelineError(Exception):
@@ -130,36 +130,36 @@ class Job:
 
 # --- glossary ---------------------------------------------------------------------------------------------------
 
-def glossary_path(workdir) -> Path:
-    return Path(workdir) / GLOSSARY_FILE
+def glossary_path(pdf) -> Path:
+    """One glossary per slide deck, kept in the PDF's folder so every lecture with that PDF shares it."""
+    pdf = Path(pdf)
+    return pdf.parent / GLOSSARY_DIR / f"{pdf.stem}.glossary.txt"
 
 
-def read_glossary(workdir) -> str | None:
-    """The saved (possibly hand-edited) glossary of a lecture, one term per line; None if there is none yet."""
+def read_glossary(pdf) -> str | None:
+    """The saved (possibly hand-edited) glossary of a deck, one term per line; None if there is none yet."""
     try:
-        return glossary_path(workdir).read_text(encoding="utf-8")
+        return glossary_path(pdf).read_text(encoding="utf-8")
     except OSError:
         return None
 
 
-def save_glossary(workdir, text: str) -> None:
-    path = glossary_path(workdir)
+def save_glossary(pdf, text: str) -> None:
+    path = glossary_path(pdf)
     path.parent.mkdir(parents=True, exist_ok=True)
     terms = [line.strip() for line in text.splitlines() if line.strip()]
     path.write_text("\n".join(terms) + ("\n" if terms else ""), encoding="utf-8")
 
 
-def make_glossary(pdf, workdir) -> str:
-    """Build the glossary from the text of the slides and save it as the lecture's glossary.txt."""
+def make_glossary(pdf) -> str:
+    """Build the glossary from the text of the slides and save it (this is the cache: it is built once)."""
     try:
         cfg = load_config()  # no ffmpeg needed for this
     except ConfigError as exc:
         raise PipelineError(str(exc)) from None
-    slides = load_slides(pdf)
-    cache = LLMCache(Path(workdir) / "llm_cache.json")
-    text = build_glossary(make_client(cfg), cfg.glossary_model, slides, cache,
+    text = build_glossary(make_client(cfg), cfg.glossary_model, load_slides(pdf), LLMCache(None),
                           limiter=RateLimiter(cfg.requests_per_minute))
-    save_glossary(workdir, text)
+    save_glossary(pdf, text)
     return text
 
 
@@ -421,10 +421,10 @@ def run(job: Job, reporter: Reporter | None = None) -> Path:
         reporter.stage("cleanup", 0.0, "preparing the glossary")
         client = make_client(cfg)
         cache = LLMCache(job.workdir / "llm_cache.json")
-        glossary = read_glossary(job.workdir)
-        if glossary is None:  # the first run builds it; edit glossary.txt (or use the UI) and run again
+        glossary = read_glossary(job.pdf)
+        if glossary is None:  # the first run builds it; edit it (in the UI or the file) and run again
             glossary = build_glossary(client, cfg.glossary_model, slides, cache, limiter=limiter)
-            save_glossary(job.workdir, glossary)
+            save_glossary(job.pdf, glossary)
         else:
             reporter.log("using the saved glossary")
         outline = build_outline(slides)

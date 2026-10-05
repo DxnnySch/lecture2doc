@@ -54,9 +54,15 @@ def pair_pdf(video_stem: str, pdf_names: list[str]) -> str | None:
     return best if difflib.SequenceMatcher(None, key, stems[best]).ratio() >= 0.6 else None
 
 
+def natural_key(name: str) -> list:
+    """Sort key for file names: case-insensitive, and numbers by value (lecture 2 before lecture 10)."""
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", name.lower())]
+
+
 def list_files(folder: str, suffixes: set[str]) -> list[str]:
     try:
-        return sorted(p.name for p in Path(folder).iterdir() if p.is_file() and p.suffix.lower() in suffixes)
+        return sorted((p.name for p in Path(folder).iterdir() if p.is_file() and p.suffix.lower() in suffixes),
+                      key=natural_key)
     except OSError:
         return []
 
@@ -85,6 +91,7 @@ class App:
     def __init__(self, settings_file: Path = SETTINGS_FILE):
         self.settings_file = settings_file
         self.lock = threading.RLock()
+        self.glossary_lock = threading.Lock()  # building a glossary takes seconds; keep it apart from the state lock
         self.settings = {"pdf_dir": "", "video_dir": "", "out_dir": str(Path.cwd() / "output"),
                          "options": {"cleanup": True, "keep_raw": False, "thumbnails": True, "timestamps": True,
                                      "page_breaks": True, "group_by_slide": False, "language": ""},
@@ -136,7 +143,7 @@ class App:
                     job["elapsed"] = round(time.time() - job["started"])
                 job.pop("started", None)
             rows.append({"video": video, "pdf": pdf, "job": job,
-                         "has_glossary": pipeline.glossary_path(work).is_file(),
+                         "has_glossary": bool(pdf) and pipeline.glossary_path(self._pdf_path(pdf)).is_file(),
                          "has_segments": (work / "segments.json").is_file(),
                          "docx": self.output(video).is_file()})
         return rows
@@ -161,6 +168,9 @@ class App:
     def set_pair(self, video: str, pdf: str) -> None:
         self.settings["pairs"][video] = pdf
         self.save_settings()
+
+    def _pdf_path(self, pdf: str) -> Path:
+        return Path(self.settings["pdf_dir"]) / pdf
 
     def _row(self, video: str) -> dict:
         for row in self.lectures():
@@ -229,20 +239,21 @@ class App:
                 with self.lock:
                     state["elapsed_total"] = round(time.time() - state["started"])
 
-    def glossary(self, video: str, generate: bool = False) -> str:
+    def _deck(self, video: str) -> Path:
         row = self._row(video)
-        work = self.workdir(video)
-        if not generate:
-            saved = pipeline.read_glossary(work)
-            if saved is not None:
-                return saved
         if not row["pdf"]:
             raise pipeline.PipelineError("Choose a slide PDF for this video first.")
-        return pipeline.make_glossary(Path(self.settings["pdf_dir"]) / row["pdf"], work)
+        return self._pdf_path(row["pdf"])
+
+    def glossary(self, video: str, generate: bool = False) -> str:
+        """The glossary of the video's PDF: the saved one, or (first time / on request) a freshly built one."""
+        pdf = self._deck(video)
+        with self.glossary_lock:  # two requests for the same deck must not build it twice
+            saved = None if generate else pipeline.read_glossary(pdf)
+            return saved if saved is not None else pipeline.make_glossary(pdf)
 
     def save_glossary(self, video: str, text: str) -> None:
-        self._row(video)
-        pipeline.save_glossary(self.workdir(video), text)
+        pipeline.save_glossary(self._deck(video), text)
 
     def reset(self, video: str) -> None:
         self._row(video)
