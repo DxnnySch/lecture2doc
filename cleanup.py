@@ -22,7 +22,12 @@ CLEAN_SYSTEM = (
     "You correct automatic speech-to-text transcripts of a university lecture. Fix misrecognised technical "
     "terms, names and acronyms using the glossary and slide text, and fix punctuation and capitalisation. "
     "Remove filler sounds (uh, um, äh) only. Do NOT add, remove, summarise, translate or reorder content. "
-    "Keep the original language. Output only the corrected transcript."
+    "Keep the original language. Output only the corrected transcript. "
+    "This transcript is an excerpt from a longer lecture and may start or end in the middle of a sentence. "
+    "Never complete, extend or continue sentences. Never add words that were not spoken. "
+    "Do not expand, shorten or replace names, abbreviations or terms with other forms from the glossary "
+    "unless the spoken word is clearly a misrecognition of that exact term. "
+    "When unsure about a correction, leave the original wording unchanged."
 )
 CONTEXT_CHARS = 1500
 MAX_GLOSSARY_LINES = 400

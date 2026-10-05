@@ -63,6 +63,21 @@ def test_cleanup_uses_corrected_text_and_slide_context():
     assert "Gradient descent" in prompt and "The grading descent works." in prompt and "Title 1" in prompt
 
 
+def test_cleanup_system_message_has_guardrails():
+    # Verify the system message contains the three new guardrail rules
+    client = FakeClient("The gradient descent works.")
+    cleanup_spans(client, "m", "", "", slides(), [Span(1, 0, 5, 1)],
+                  ["The grading descent works."], LLMCache(None))
+    system_msg = client.calls[0][1][0]["content"]
+    # Rule 1: Never complete or extend sentences
+    assert "middle of a sentence" in system_msg
+    assert "Never complete" in system_msg
+    # Rule 2: Don't expand/replace terms unless clear misrecognition
+    assert "expand" in system_msg.lower() or "shorten" in system_msg.lower()
+    # Rule 3: When unsure, leave original unchanged
+    assert "unsure" in system_msg.lower() and "unchanged" in system_msg.lower()
+
+
 def test_cleanup_falls_back_to_raw_on_big_change(caplog):
     client = FakeClient("short")
     raw = "this is a fairly long transcript sentence about decision support systems"
