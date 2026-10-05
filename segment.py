@@ -42,8 +42,8 @@ def _normalise(mat: np.ndarray) -> np.ndarray:
     return np.divide(mat, norms, out=np.zeros_like(mat), where=norms > 1e-6)
 
 
-def probe_aspect(video) -> float:
-    """Display aspect ratio (width / height) of the first video stream, via ffprobe."""
+def probe_size(video) -> tuple[int, int]:
+    """(width, height) in pixels of the first video stream, via ffprobe."""
     cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
            "-of", "csv=p=0:s=x", str(video)]
     try:
@@ -51,9 +51,15 @@ def probe_aspect(video) -> float:
         w, h = (int(v) for v in out.strip().split("x"))
         if w <= 0 or h <= 0:
             raise ValueError("non-positive size")
-        return w / h
+        return w, h
     except (subprocess.CalledProcessError, OSError, ValueError) as exc:
         raise RuntimeError(f"ffprobe could not read the video size of {video}: {exc}") from exc
+
+
+def probe_aspect(video) -> float:
+    """Display aspect ratio (width / height) of the first video stream."""
+    w, h = probe_size(video)
+    return w / h
 
 
 def _letterbox(im: Image.Image, aspect: float) -> Image.Image:
@@ -79,12 +85,23 @@ def slide_features(images: list[Image.Image], aspect: float = 16 / 9) -> np.ndar
     return _normalise(np.stack(rows))
 
 
-def match_frames(frames: np.ndarray, feats: np.ndarray, threshold: float = 0.6) -> tuple[np.ndarray, np.ndarray]:
+def match_frames(frames: np.ndarray, feats: np.ndarray, threshold: float = 0.6,
+                 numbers=None) -> tuple[np.ndarray, np.ndarray]:
+    """Label every frame with the 0-based index of the slide it shows (-1 = none) and a confidence.
+
+    `numbers` (optional, see pagenumbers.NumberEvidence) says which pages the number printed in the frame's corner
+    allows. Where it names candidates the frame is labelled with one of them (the picture only decides between
+    candidates that print the same number) and the match threshold is not applied: a half-built slide hardly
+    resembles its finished PDF page, but its page number is always there."""
     scores = _normalise(frames.reshape(len(frames), -1)) @ feats.T
     best = scores.argmax(axis=1)
     conf = scores.max(axis=1)
     labels = np.where(conf >= threshold, best, -1)
-    return labels, conf
+    if numbers is None:
+        return labels, conf
+    known = numbers.mask.any(axis=1)
+    among_candidates = np.where(numbers.mask, scores, -np.inf).argmax(axis=1)
+    return np.where(known, among_candidates, labels), np.where(known, numbers.score, conf)
 
 
 def smooth(labels: np.ndarray, window: int = 5) -> np.ndarray:

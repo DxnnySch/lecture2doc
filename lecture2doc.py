@@ -13,6 +13,7 @@ import json
 import logging
 from pathlib import Path
 
+import numpy as np
 import openai
 
 from api import RateLimiter, make_client
@@ -20,6 +21,8 @@ from cleanup import LLMCache, build_glossary, build_outline, cleanup_spans
 from align import snap_to_sentences
 from config import ConfigError, check_ffmpeg, load_config
 from docx_out import SpanText, write_docx
+from pagenumbers import (NumberEvidence, extract_strips, find_number_region, number_templates,
+                         numbers_from_strips)
 from segment import (Span, absorb_unmatched, build_spans, extract_frames, match_frames, probe_aspect,
                      slide_features, smooth, unmatched_seconds)
 from slides import load_slides
@@ -50,6 +53,10 @@ def parse_args(argv):
     p.add_argument("--interval", type=float, default=1.0, help="seconds between sampled frames")
     p.add_argument("--threshold", type=float, default=0.6, help="minimum match score for a frame to count")
     p.add_argument("--smooth", type=int, default=5, help="majority-vote window in frames")
+    p.add_argument("--no-slide-numbers", action="store_true",
+                   help="do not use the page number in the corner of the video to identify slides (by default it "
+                        "is used when the PDF prints page numbers, so half-built animated slides are not mistaken "
+                        "for other slides)")
     p.add_argument("--snap-seconds", type=float, default=4.0,
                    help="move a slide change that falls inside a sentence to the nearer end of that sentence if it "
                         "is at most this many seconds away, so a sentence is not split between two slides "
@@ -112,6 +119,24 @@ def print_summary(spans: list[Span], n_slides: int) -> None:
     missing = [n for n in range(1, n_slides + 1) if n not in per_slide]
     if missing:
         print(f"  slides never shown: {missing}")
+
+
+def read_slide_numbers(pdf, video, interval: float, n_frames: int) -> NumberEvidence | None:
+    """Which pages the number in the corner of each frame allows; None if the deck has no usable page numbers."""
+    region = find_number_region(pdf)
+    if region is None:
+        print("  no page numbers found in the PDF; matching whole slides only")
+        return None
+    try:
+        evidence = numbers_from_strips(extract_strips(video, region, interval), number_templates(pdf, region))
+    except RuntimeError as exc:
+        log.warning("cannot read the slide numbers (%s); matching whole slides only", exc)
+        return None
+    mask, score = evidence.mask[:n_frames], evidence.score[:n_frames]
+    if len(mask) < n_frames:  # one frame fewer than the picture pass: no information for the rest
+        mask = np.vstack([mask, np.zeros((n_frames - len(mask), mask.shape[1]), bool)])
+        score = np.concatenate([score, np.zeros(n_frames - len(score))])
+    return NumberEvidence(mask, score)
 
 
 def check_inputs(args) -> None:
@@ -179,9 +204,17 @@ def main(argv=None) -> int:
             aspect = 16 / 9
         try:
             frames = extract_frames(video, args.interval)
-            labels, conf = match_frames(frames, slide_features([s.image for s in slides], aspect), args.threshold)
+            feats = slide_features([s.image for s in slides], aspect)
+            numbers = None
+            if not args.no_slide_numbers:
+                numbers = read_slide_numbers(args.pdf, video, args.interval, len(frames))
+            labels, conf = match_frames(frames, feats, args.threshold, numbers)
         except RuntimeError as exc:
             raise SystemExit(str(exc)) from None
+        if numbers is not None:
+            picture_only, _ = match_frames(frames, feats, args.threshold)
+            print(f"  slide number readable in {100 * numbers.mask.any(axis=1).mean():.0f}% of the frames; "
+                  f"it changed the slide of {int((labels != picture_only).sum())} frames")
         spans = build_spans(smooth(labels, args.smooth), conf, args.interval)
         print_summary(spans, len(slides))
         try:

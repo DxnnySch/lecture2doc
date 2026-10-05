@@ -6,7 +6,7 @@ from docx import Document
 
 import lecture2doc
 from api import RateLimiter
-from helpers import make_pdf, make_pptx, make_video
+from helpers import animation_state, make_pdf, make_pptx, make_video
 from slides import render_pdf
 from transcribe import Word
 
@@ -377,3 +377,55 @@ def test_snap_seconds_zero_keeps_the_raw_cut(tmp_path, monkeypatch):
     out = run(video, pdf, pptx, tmp_path, "--no-cleanup", "--snap-seconds", "0")
     assert not any("end." in t for t in slide_paragraphs(out, 1))
     assert slide_paragraphs(out, 2) == ["end. Next slide."]
+
+
+def numbered_setup(tmp_path, monkeypatch):
+    """A numbered deck; slides 2 and 4 are only shown half built (just the footer with the page number)."""
+    monkeypatch.setenv("SCADS_API_KEY", "dummy")
+    pdf = make_pdf(tmp_path / "n.pdf", 4, numbers=True)
+    pptx = make_pptx(tmp_path / "n.pptx", [(f"Topic {i}", "x", False) for i in range(1, 5)])
+    images, _ = render_pdf(pdf, width=960)
+    order = [0] * 4 + [animation_state(images[1])] * 4 + [2] * 4 + [animation_state(images[3])] * 4
+    video = make_video(images, order, tmp_path / "num.mp4", size=(960, 540))
+    words = [Word("one", 1.0, 1.4), Word("two", 5.0, 5.4), Word("three", 9.0, 9.4), Word("four", 13.0, 13.4)]
+    monkeypatch.setattr(lecture2doc, "transcribe_words", lambda *a, **k: words)
+    return video, pdf, pptx
+
+
+def segment_slides(tmp_path):
+    seg = json.loads((tmp_path / "w" / "segments.json").read_text(encoding="utf-8"))
+    return [s["slide"] for s in seg["spans"]]
+
+
+def test_slide_number_in_the_corner_identifies_half_built_slides(tmp_path, monkeypatch, capsys):
+    video, pdf, pptx = numbered_setup(tmp_path, monkeypatch)
+    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    assert segment_slides(tmp_path) == [1, 2, 3, 4]
+    out = capsys.readouterr().out
+    assert "slide number readable in" in out and "it changed the slide of 8 frames" in out
+
+
+def test_no_slide_numbers_option_uses_the_picture_alone(tmp_path, monkeypatch, capsys):
+    video, pdf, pptx = numbered_setup(tmp_path, monkeypatch)
+    run(video, pdf, pptx, tmp_path, "--no-cleanup", "--no-slide-numbers")
+    assert segment_slides(tmp_path) != [1, 2, 3, 4]  # the half-built slides are lost without the number
+    assert "slide number readable" not in capsys.readouterr().out
+
+
+def test_a_deck_without_page_numbers_still_works_and_says_so(tmp_path, monkeypatch, capsys):
+    video, pdf, pptx = setup(tmp_path, monkeypatch)  # the plain deck has no numbers
+    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    assert segment_slides(tmp_path) == [1, 2, 1]
+    assert "no page numbers found in the PDF" in capsys.readouterr().out
+
+
+def test_unreadable_numbers_fall_back_to_the_picture_with_a_warning(tmp_path, monkeypatch, caplog):
+    video, pdf, pptx = numbered_setup(tmp_path, monkeypatch)
+
+    def broken(*a, **k):
+        raise RuntimeError("strip pass failed")
+
+    monkeypatch.setattr(lecture2doc, "extract_strips", broken)
+    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    assert "cannot read the slide numbers" in caplog.text
+    assert segment_slides(tmp_path)  # it still produced a document
