@@ -32,3 +32,12 @@ def test_non_retryable_propagates_immediately():
     with pytest.raises(KeyError):
         retry_call(fn, sleep=lambda s: None, retryable=(ValueError,))
     assert len(calls) == 1
+
+
+def test_make_client_disables_sdk_retries_and_sets_timeout():
+    from api import make_client
+    from config import Config
+
+    client = make_client(Config("k", "http://x/v1", "stt", "llm", "llm"))
+    assert client.max_retries == 0
+    assert client.timeout == 300
