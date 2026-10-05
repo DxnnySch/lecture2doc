@@ -316,3 +316,20 @@ def test_rebuild_requires_a_complete_segments_file(tmp_path, monkeypatch, conten
     with pytest.raises(SystemExit, match=message):
         lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(tmp_path / "x.docx"),
                           "--workdir", str(tmp_path / "w"), "--rebuild"])
+
+
+def test_page_breaks_by_default_and_no_page_breaks_option(tmp_path, monkeypatch):
+    video, pdf, pptx = setup(tmp_path, monkeypatch)
+
+    def flags(path):
+        return [p.paragraph_format.page_break_before for p in Document(path).paragraphs if p.style.name == "Heading 1"]
+
+    default = run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    assert flags(default) == [None, True, True]
+    compact = run(video, pdf, pptx, tmp_path, "--no-cleanup", "--no-page-breaks", out=tmp_path / "compact.docx")
+    assert flags(compact) == [None, None, None]
+    forbid_heavy_work(monkeypatch)  # --rebuild honours the option too, offline
+    rebuilt = tmp_path / "rebuilt.docx"
+    lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(rebuilt), "--workdir", str(tmp_path / "w"),
+                      "--rebuild", "--no-page-breaks"])
+    assert flags(rebuilt) == [None, None, None]

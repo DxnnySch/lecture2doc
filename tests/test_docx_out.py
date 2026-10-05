@@ -177,3 +177,19 @@ def test_no_timestamps_option_and_legacy_spans_without_end(tmp_path):
     assert subtitles(read(out)[1]) == []
     write_docx(out, "L", slides(), [SpanText(1, 0, "Hi.", "r")])  # no end known
     assert subtitles(read(out)[1]) == []
+
+
+def break_flags(path):
+    return [p.paragraph_format.page_break_before for p in Document(path).paragraphs if p.style.name == "Heading 1"]
+
+
+def test_every_slide_after_the_first_starts_on_a_new_page(tmp_path):
+    out = tmp_path / "o.docx"
+    write_docx(out, "L", slides(), [SpanText(1, 0, "Hi.", "r", end=5)])
+    assert break_flags(out) == [None, True, True]  # slide 1 stays with the document title
+
+
+def test_page_breaks_can_be_turned_off(tmp_path):
+    out = tmp_path / "o.docx"
+    write_docx(out, "L", slides(), [SpanText(1, 0, "Hi.", "r", end=5)], page_breaks=False)
+    assert break_flags(out) == [None, None, None]

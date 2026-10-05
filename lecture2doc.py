@@ -38,6 +38,8 @@ def parse_args(argv):
     p.add_argument("--no-cleanup", action="store_true", help="skip LLM transcript cleanup")
     p.add_argument("--keep-raw", action="store_true", help="also put the raw transcript in the document")
     p.add_argument("--no-thumbnails", action="store_true")
+    p.add_argument("--no-page-breaks", action="store_true",
+                   help="do not start every slide on a new page (more compact document)")
     p.add_argument("--no-timestamps", action="store_true",
                    help="omit the video time range shown under each slide heading")
     p.add_argument("--rebuild", action="store_true",
@@ -133,7 +135,8 @@ def rebuild(args) -> int:
     entries = _parse_segments(seg_path, len(slides), need_text=True)
     write_docx(out, video.stem, slides,
                [SpanText(sp.slide, sp.start, clean, raw, sp.end) for sp, raw, clean in entries],
-               thumbnails=not args.no_thumbnails, keep_raw=args.keep_raw, timestamps=not args.no_timestamps)
+               thumbnails=not args.no_thumbnails, keep_raw=args.keep_raw, timestamps=not args.no_timestamps,
+               page_breaks=not args.no_page_breaks)
     print(f"Wrote {out}")
     return 0
 
@@ -208,7 +211,8 @@ def main(argv=None) -> int:
 
     write_docx(out, video.stem, slides,
                [SpanText(s.slide, s.start, c, r, s.end) for s, r, c in zip(spans, raws, cleans)],
-               thumbnails=not args.no_thumbnails, keep_raw=args.keep_raw, timestamps=not args.no_timestamps)
+               thumbnails=not args.no_thumbnails, keep_raw=args.keep_raw, timestamps=not args.no_timestamps,
+               page_breaks=not args.no_page_breaks)
     print(f"Wrote {out}")
     return 0
 
