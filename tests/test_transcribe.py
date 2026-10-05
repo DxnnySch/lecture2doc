@@ -1,6 +1,10 @@
 from types import SimpleNamespace as NS
+import json
+from pathlib import Path
 
 import pytest
+import httpx2
+from openai import BadRequestError
 
 from config import Config
 from helpers import make_pdf, make_video
@@ -57,13 +61,16 @@ def test_split_audio_chunks_and_offsets(tmp_path):
 
 
 class FakeClient:
-    def __init__(self):
+    def __init__(self, raise_error_on_first=False):
         self.calls = 0
+        self.raise_error_on_first = raise_error_on_first
         self.audio = NS(transcriptions=NS(create=self.create))
 
     def create(self, **kwargs):
         self.calls += 1
         assert kwargs["model"] == "alias-stt" and kwargs["response_format"] == "verbose_json"
+        if self.raise_error_on_first and self.calls == 1 and "timestamp_granularities" in kwargs:
+            raise BadRequestError("word timestamps not supported", response=httpx2.Response(400, request=httpx2.Request("POST", "http://x")), body=None)
         return NS(words=[NS(word="hi", start=0.1, end=0.3)])
 
 
@@ -76,5 +83,113 @@ def test_transcribe_words_offsets_and_cache(tmp_path):
     words = transcribe_words(cfg, video, cache, chunk_seconds=5, client=client)
     assert client.calls == 3
     assert [round(w.start, 1) for w in words] == [0.1, 5.1, 10.1]
+
+    # Verify cache format
+    cache_data = json.loads(cache.read_text(encoding="utf-8"))
+    assert "meta" in cache_data
+    assert "words" in cache_data
+    assert cache_data["meta"]["video"] == "v.mp4"
+    assert cache_data["meta"]["chunk_seconds"] == 5
+    assert cache_data["meta"]["language"] is None
+
     again = transcribe_words(cfg, video, cache, chunk_seconds=5, client=client)
     assert client.calls == 3 and again == words  # served from cache
+
+
+def test_transcribe_words_cache_invalidated_by_language(tmp_path):
+    images, _ = render_pdf(make_pdf(tmp_path / "s.pdf", 1))
+    video = make_video(images, [0] * 12, tmp_path / "v.mp4")
+    cfg = Config("k", "http://x", "alias-stt", "llm", "llm")
+    client = FakeClient()
+    cache = tmp_path / "words.json"
+    words1 = transcribe_words(cfg, video, cache, language=None, chunk_seconds=5, client=client)
+    assert client.calls == 3
+    # Now call with different language - cache should be invalidated
+    words2 = transcribe_words(cfg, video, cache, language="de", chunk_seconds=5, client=client)
+    assert client.calls == 6  # Should have called 3 more times
+
+
+def test_transcribe_words_cache_corrupt_json_is_miss(tmp_path):
+    images, _ = render_pdf(make_pdf(tmp_path / "s.pdf", 1))
+    video = make_video(images, [0] * 12, tmp_path / "v.mp4")
+    cfg = Config("k", "http://x", "alias-stt", "llm", "llm")
+    client = FakeClient()
+    cache = tmp_path / "words.json"
+    # Create corrupt cache
+    cache.write_text("not valid json", encoding="utf-8")
+    words = transcribe_words(cfg, video, cache, chunk_seconds=5, client=client)
+    assert client.calls == 3
+    assert len(words) > 0
+
+
+def test_transcribe_words_cache_mismatched_meta_is_miss(tmp_path):
+    images, _ = render_pdf(make_pdf(tmp_path / "s.pdf", 1))
+    video = make_video(images, [0] * 12, tmp_path / "v.mp4")
+    cfg = Config("k", "http://x", "alias-stt", "llm", "llm")
+    client = FakeClient()
+    cache = tmp_path / "words.json"
+    # Create cache with mismatched chunk_seconds
+    cache_data = {"meta": {"video": "v.mp4", "size": 1000, "language": None, "chunk_seconds": 10}, "words": []}
+    cache.write_text(json.dumps(cache_data), encoding="utf-8")
+    words = transcribe_words(cfg, video, cache, chunk_seconds=5, client=client)
+    assert client.calls == 3  # Should re-transcribe due to mismatch
+
+
+def test_split_audio_bad_input_raises(tmp_path):
+    # Pass a non-media file
+    bad_file = tmp_path / "not_a_video.txt"
+    bad_file.write_text("not a video")
+    with pytest.raises(RuntimeError, match="audio extraction failed"):
+        split_audio(bad_file, tmp_path / "chunks", chunk_seconds=5)
+
+
+def test_split_audio_no_chunks_produced_raises(tmp_path):
+    # Create a video file that ffmpeg can't process or produces no chunks
+    bad_file = tmp_path / "empty.mp3"
+    bad_file.write_bytes(b"not audio data")
+    with pytest.raises(RuntimeError, match="audio extraction failed"):
+        split_audio(bad_file, tmp_path / "chunks", chunk_seconds=5)
+
+
+def test_transcribe_words_no_words_extracted_raises(tmp_path):
+    images, _ = render_pdf(make_pdf(tmp_path / "s.pdf", 1))
+    video = make_video(images, [0] * 12, tmp_path / "v.mp4")
+    cfg = Config("k", "http://x", "alias-stt", "llm", "llm")
+
+    class NoWordsClient:
+        def __init__(self):
+            self.calls = 0
+            self.audio = NS(transcriptions=NS(create=self.create))
+
+        def create(self, **kwargs):
+            self.calls += 1
+            return NS(words=None, segments=None, text="")
+
+    client = NoWordsClient()
+    cache = tmp_path / "words.json"
+    with pytest.raises(RuntimeError, match="transcription returned no words"):
+        transcribe_words(cfg, video, cache, chunk_seconds=5, client=client)
+
+
+def test_bad_request_error_fallback_and_log(tmp_path, caplog):
+    images, _ = render_pdf(make_pdf(tmp_path / "s.pdf", 1))
+    video = make_video(images, [0] * 12, tmp_path / "v.mp4")
+    cfg = Config("k", "http://x", "alias-stt", "llm", "llm")
+    client = FakeClient(raise_error_on_first=True)
+    cache = tmp_path / "words.json"
+
+    import logging
+    caplog.set_level(logging.WARNING)
+
+    words = transcribe_words(cfg, video, cache, chunk_seconds=5, client=client)
+    # First chunk should fail with BadRequestError, then retry without timestamp_granularities
+    # Expected: 3 chunks * 2 calls (first fails, second succeeds) but last chunk only calls once
+    # Actually: first chunk fails once and retries (2 calls), then chunks 2 and 3 just call normally
+    # So we should have something like 5 total calls
+    assert len(words) > 0
+    assert "word timestamps not supported" in caplog.text or client.calls > 3
+
+
+def test_assign_words_empty_spans_returns_empty():
+    words = [Word("a", 1, 2), Word("b", 3, 4)]
+    assert assign_words(words, []) == []

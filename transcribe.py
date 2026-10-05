@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import tempfile
 from dataclasses import asdict, dataclass
@@ -10,6 +11,8 @@ from pathlib import Path
 from openai import BadRequestError
 
 from api import make_client, retry_call
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -21,13 +24,23 @@ class Word:
 
 def split_audio(video, out_dir: Path, chunk_seconds: int = 300) -> list[tuple[Path, float]]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["ffmpeg", "-v", "error", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k",
-         "-f", "segment", "-segment_time", str(chunk_seconds), "-reset_timestamps", "1",
-         str(out_dir / "chunk%03d.mp3")],
-        check=True,
-    )
+    try:
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k",
+             "-f", "segment", "-segment_time", str(chunk_seconds), "-reset_timestamps", "1",
+             str(out_dir / "chunk%03d.mp3")],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
+        # Get last ~500 chars of stderr
+        error_snippet = stderr[-500:] if len(stderr) > 500 else stderr
+        raise RuntimeError(f"audio extraction failed: {error_snippet}") from e
+
     files = sorted(out_dir.glob("chunk*.mp3"))
+    if not files:
+        raise RuntimeError(f"no audio extracted from {video}")
     return [(f, float(i * chunk_seconds)) for i, f in enumerate(files)]
 
 
@@ -73,15 +86,31 @@ def _transcribe_chunk(client, model: str, path: Path, language: str | None):
 
     try:
         return retry_call(lambda: call({"timestamp_granularities": ["word", "segment"]}))
-    except BadRequestError:  # gateway rejected word timestamps
+    except BadRequestError as e:  # gateway rejected word timestamps
+        log.warning(f"word timestamps not supported, falling back: {e.message}")
         return retry_call(lambda: call({}))
 
 
 def transcribe_words(cfg, video, cache_path: Path, language: str | None = None,
                      chunk_seconds: int = 300, client=None) -> list[Word]:
     cache_path = Path(cache_path)
+    video = Path(video)
+    video_size = video.stat().st_size
+
+    # Check cache validity
     if cache_path.exists():
-        return [Word(**d) for d in json.loads(cache_path.read_text(encoding="utf-8"))]
+        try:
+            cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(cache_data, dict) and "meta" in cache_data and "words" in cache_data:
+                meta = cache_data["meta"]
+                if (meta.get("video") == video.name and
+                    meta.get("size") == video_size and
+                    meta.get("language") == language and
+                    meta.get("chunk_seconds") == chunk_seconds):
+                    return [Word(**d) for d in cache_data["words"]]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass  # Cache is corrupt, treat as a miss
+
     client = client or make_client(cfg)
     words: list[Word] = []
     with tempfile.TemporaryDirectory() as tmp:
@@ -89,13 +118,28 @@ def transcribe_words(cfg, video, cache_path: Path, language: str | None = None,
         for i, (path, offset) in enumerate(chunks, 1):
             print(f"  transcribing chunk {i}/{len(chunks)}", flush=True)
             words.extend(parse_response(_transcribe_chunk(client, cfg.stt_model, path, language), offset, chunk_seconds))
+
+    if not words:
+        raise RuntimeError("transcription returned no words")
+
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps([asdict(w) for w in words], ensure_ascii=False), encoding="utf-8")
+    cache_data = {
+        "meta": {
+            "video": video.name,
+            "size": video_size,
+            "language": language,
+            "chunk_seconds": chunk_seconds,
+        },
+        "words": [asdict(w) for w in words],
+    }
+    cache_path.write_text(json.dumps(cache_data, ensure_ascii=False), encoding="utf-8")
     return words
 
 
 def assign_words(words: list[Word], spans) -> list[str]:
     """Text per span. A word belongs to the span containing its midpoint; strays go to the first/last span."""
+    if not spans:
+        return []
     buckets: list[list[str]] = [[] for _ in spans]
     for w in words:
         mid = (w.start + w.end) / 2
