@@ -14,7 +14,7 @@ from pathlib import Path
 from api import make_client
 from cleanup import LLMCache, build_glossary, build_outline, cleanup_spans
 from config import ConfigError, check_ffmpeg, load_config
-from docx_out import SpanText, fmt_time, write_docx
+from docx_out import SpanText, write_docx
 from segment import (Span, absorb_unmatched, build_spans, extract_frames, match_frames, slide_features, smooth,
                      unmatched_seconds)
 from slides import load_slides
@@ -40,32 +40,71 @@ def parse_args(argv):
 
 
 def load_spans(path, n_slides: int) -> list[Span]:
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))["spans"]
-    spans = [Span(d["slide"], d["start"], d["end"], d.get("confidence", 1.0)) for d in raw]
-    bad = sorted({s.slide for s in spans if s.slide is None or not 1 <= s.slide <= n_slides})
+    name = f"segments file {path}"
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise SystemExit(f"cannot read {name}: {exc}") from None
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{name} is invalid JSON: {exc}") from None
+    raw = data.get("spans") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        raise SystemExit(f"{name} must be an object with a 'spans' list")
+    spans = []
+    for i, d in enumerate(raw, 1):
+        if not isinstance(d, dict):
+            raise SystemExit(f"{name}: span {i} is not an object")
+        for key in ("slide", "start", "end"):
+            if key not in d:
+                raise SystemExit(f"{name}: span {i} is missing '{key}'")
+        try:
+            slide, start, end = int(d["slide"]), float(d["start"]), float(d["end"])
+            conf = float(d.get("confidence", 1.0))
+        except (TypeError, ValueError):
+            raise SystemExit(f"{name}: span {i} has a non-numeric slide/start/end/confidence") from None
+        if end <= start:
+            raise SystemExit(f"{name}: span {i} has end <= start ({end} <= {start})")
+        spans.append(Span(slide, start, end, conf))
+    bad = sorted({s.slide for s in spans if not 1 <= s.slide <= n_slides})
     if bad:
-        raise SystemExit(f"segments file refers to slides {bad}, but the deck has slides 1-{n_slides}")
-    return spans
+        raise SystemExit(f"{name} refers to slides {bad}, but the deck has slides 1-{n_slides}")
+    return sorted(spans, key=lambda s: s.start)
 
 
 def print_summary(spans: list[Span], n_slides: int) -> None:
-    seen = {s.slide for s in spans if s.slide}
+    """Spans must be the ones before absorb_unmatched (unmatched = slide None)."""
+    per_slide: dict[int, float] = {}
+    for s in spans:
+        if s.slide is not None:
+            per_slide[s.slide] = per_slide.get(s.slide, 0.0) + (s.end - s.start)
+    for n in sorted(per_slide):
+        print(f"  slide {n:>2}:  {per_slide[n]:.0f}s matched")
     total = sum(s.end - s.start for s in spans) or 1.0
     unmatched = unmatched_seconds(spans)
-    print(f"  {len(spans)} spans; {unmatched:.0f}s of {total:.0f}s ({100 * unmatched / total:.0f}%) matched no slide")
-    missing = [n for n in range(1, n_slides + 1) if n not in seen]
+    print(f"  unmatched: {unmatched:.0f}s of {total:.0f}s ({100 * unmatched / total:.0f}%)")
+    missing = [n for n in range(1, n_slides + 1) if n not in per_slide]
     if missing:
         print(f"  slides never shown: {missing}")
 
 
+def check_inputs(args) -> None:
+    checks = [("video", args.video), ("PDF", args.pdf), ("PPTX", args.pptx)]
+    if args.from_segments:
+        checks.append(("segments file", args.from_segments))
+    for label, path in checks:
+        if not Path(path).is_file():
+            raise SystemExit(f"{label} not found: {path}")
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
+    check_inputs(args)
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
     try:
         check_ffmpeg()
         cfg = load_config()
     except ConfigError as exc:
-        raise SystemExit(str(exc))
+        raise SystemExit(str(exc)) from None
     video = Path(args.video)
     workdir = Path(args.workdir) if args.workdir else Path("output") / video.stem
     workdir.mkdir(parents=True, exist_ok=True)
@@ -78,6 +117,7 @@ def main(argv=None) -> int:
 
     if args.from_segments:
         spans = load_spans(args.from_segments, len(slides))
+        print_summary(spans, len(slides))
     else:
         print("Matching video frames to slides...")
         frames = extract_frames(video, args.interval)
@@ -87,13 +127,13 @@ def main(argv=None) -> int:
         try:
             spans = absorb_unmatched(spans)
         except ValueError as exc:
-            raise SystemExit(str(exc))
+            raise SystemExit(str(exc)) from None
 
     print("Transcribing...")
     try:
         words = transcribe_words(cfg, video, workdir / "words.json", args.language)
     except RuntimeError as exc:
-        raise SystemExit(str(exc))
+        raise SystemExit(str(exc)) from None
     raws = assign_words(words, spans)
 
     if args.no_cleanup:
