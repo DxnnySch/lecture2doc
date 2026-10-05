@@ -28,14 +28,19 @@ def test_paragraphize_groups_sentences():
 
 def test_paragraphize_long_unpunctuated():
     # 200-word string without punctuation should split into 3 paragraphs: 80, 80, 40 words
-    words = " ".join(["word"] * 200)
-    result = paragraphize(words)
+    # Use distinct words to make word order verification meaningful
+    distinct_words = [f"w{i}" for i in range(200)]
+    text = " ".join(distinct_words)
+    result = paragraphize(text)
     assert len(result) == 3
     assert len(result[0].split()) == 80
     assert len(result[1].split()) == 80
     assert len(result[2].split()) == 40
     # Verify word order preserved and no words lost
-    assert " ".join(result) == words
+    result_words = []
+    for para in result:
+        result_words.extend(para.split())
+    assert result_words == distinct_words
 
 
 def test_paragraphize_normal_unchanged():
@@ -44,6 +49,23 @@ def test_paragraphize_normal_unchanged():
     result = paragraphize(normal, per=4)
     assert len(result) == 1
     assert result[0] == normal
+
+
+def test_paragraphize_long_sentence_in_middle():
+    # Long sentence should flush the current group, emit chunks, then continue grouping normally
+    # 2 normal, 1 long (200 words), 2 normal -> [2 joined], 80, 80, 40, [2 joined]
+    long_words = " ".join([f"w{i}" for i in range(200)]) + "."
+    text = f"First. Second. {long_words} Sixth. Seventh."
+    result = paragraphize(text, per=2)
+    assert len(result) == 5
+    # First paragraph: First and Second joined (2 normal sentences)
+    assert result[0] == "First. Second."
+    # Next 3 paragraphs: 80, 80, 40 word chunks
+    assert len(result[1].split()) == 80
+    assert len(result[2].split()) == 80
+    assert len(result[3].split()) == 40
+    # Last paragraph: Sixth and Seventh joined (2 normal sentences)
+    assert result[4] == "Sixth. Seventh."
 
 
 def test_headings_titles_and_no_speech(tmp_path):
@@ -90,22 +112,30 @@ def test_empty_span_skipped(tmp_path):
 def test_control_characters_stripped(tmp_path):
     # Control characters should be stripped without raising and text should be preserved
     out = tmp_path / "o.docx"
-    title_with_ctrl = "Title\x00with\x01control"
-    slide_title_with_ctrl = "Slide\x08Title\x0b"
-    span_text_with_ctrl = "Text\x00with\x1fcontrol chars"
-    raw_text_with_ctrl = "Raw\x00text\x1f"
+    title = "Lec\x00ture"
+    slide_title = "Slide\x08Title"
+    span_text = "Text\x0bwith\x1fcontrol chars."
+    raw_text = "Raw\x0ctext"
 
-    spans = [SpanText(1, 0, span_text_with_ctrl, raw_text_with_ctrl)]
+    spans = [SpanText(1, 0, span_text, raw_text)]
     slides_list = [
-        Slide(1, slide_title_with_ctrl, "", Image.new("RGB", (48, 27), "white")),
+        Slide(1, slide_title, "", Image.new("RGB", (48, 27), "white")),
         Slide(2, None, "", Image.new("RGB", (48, 27), "white")),
         Slide(3, "Outro", "", Image.new("RGB", (48, 27), "white"))
     ]
 
-    write_docx(out, title_with_ctrl, slides_list, spans, thumbnails=False, keep_raw=True)
+    # Must not raise ValueError and must strip control characters
+    write_docx(out, title, slides_list, spans, thumbnails=False, keep_raw=True)
     doc, paras = read(out)
 
-    # Check that control characters are removed but surrounding text is kept
-    assert ("Title", "TitlewithControl") in paras or ("Title", "Title with control") in paras or \
-           any("Title" in t and "control" in t and "\x00" not in t and "\x1f" not in t for s, t in paras)
-    assert any("\x00" not in p and "\x1f" not in p for _, p in paras)  # No control chars anywhere
+    # Verify no forbidden control characters appear in any paragraph
+    forbidden_chars = [chr(i) for i in list(range(0x00, 0x09)) + [0x0b, 0x0c] + list(range(0x0e, 0x20))]
+    for style_name, para_text in paras:
+        for char in forbidden_chars:
+            assert char not in para_text, f"Found forbidden char {repr(char)} in paragraph: {repr(para_text)}"
+
+    # Verify exact expected strings are present
+    assert ("Title", "Lecture") in paras, f"Title 'Lecture' not found in paras"
+    assert ("Heading 1", "Slide 1 – SlideTitle") in paras, f"Heading not found in paras"
+    assert ("Normal", "Textwithcontrol chars.") in paras, f"Span text not found in paras"
+    assert ("Normal", "Raw: Rawtext") in paras, f"Raw text not found in paras"

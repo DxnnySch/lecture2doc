@@ -33,26 +33,31 @@ def fmt_time(seconds: float) -> str:
 
 def paragraphize(text: str, per: int = 4) -> list[str]:
     sentences = [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s]
-    # Split long unpunctuated sentences into chunks of at most MAX_WORDS
     result = []
-    had_splits = False
+    current_group = []
+
     for s in sentences:
         words = s.split()
         if len(words) > MAX_WORDS:
-            # Split this long sentence into chunks - each chunk is its own paragraph
-            had_splits = True
+            # Flush current group first
+            if current_group:
+                result.append(" ".join(current_group))
+                current_group = []
+            # Emit long sentence as chunks
             for i in range(0, len(words), MAX_WORDS):
                 result.append(" ".join(words[i:i + MAX_WORDS]))
         else:
-            result.append(s)
+            # Add to current group
+            current_group.append(s)
+            if len(current_group) == per:
+                result.append(" ".join(current_group))
+                current_group = []
 
-    # If we had to split any sentence due to length, don't apply per-grouping
-    # Each split chunk becomes its own paragraph
-    if had_splits:
-        return result
+    # Flush any remaining group
+    if current_group:
+        result.append(" ".join(current_group))
 
-    # Otherwise, group normal sentences by per
-    return [" ".join(result[i: i + per]) for i in range(0, len(result), per)]
+    return result
 
 
 def write_docx(path, title: str, slides, span_texts: list[SpanText],
