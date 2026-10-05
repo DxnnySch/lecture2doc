@@ -145,7 +145,7 @@ def test_split_audio_bad_input_raises(tmp_path):
         split_audio(bad_file, tmp_path / "chunks", chunk_seconds=5)
     # Assert stderr snippet is in the error message (should contain ffmpeg error)
     error_msg = str(exc_info.value)
-    assert "Error" in error_msg or "error" in error_msg, f"Expected error details in: {error_msg}"
+    assert "Invalid data found when processing input" in error_msg
     # Verify it's extracting stderr, not just the generic message
     assert len(error_msg) > len("audio extraction failed: ")  # Has stderr content appended
 

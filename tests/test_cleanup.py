@@ -73,7 +73,8 @@ def test_cleanup_system_message_has_guardrails():
     assert "middle of a sentence" in system_msg
     assert "Never complete" in system_msg
     # Rule 2: Don't expand/replace terms unless clear misrecognition
-    assert "expand" in system_msg.lower() or "shorten" in system_msg.lower()
+    assert "Do not expand, shorten or replace" in system_msg
+    assert "unless the spoken word is clearly a misrecognition" in system_msg
     # Rule 3: When unsure, leave original unchanged
     assert "unsure" in system_msg.lower() and "unchanged" in system_msg.lower()
 
