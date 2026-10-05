@@ -36,7 +36,12 @@ class LLMCache:
         self._lock = threading.Lock()
         self._data: dict[str, str] = {}
         if self.path and self.path.exists():
-            self._data = json.loads(self.path.read_text(encoding="utf-8"))
+            try:
+                data = json.loads(self.path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    self._data = data
+            except (json.JSONDecodeError, ValueError):
+                pass  # Treat corrupt cache as empty
 
     def get(self, key: str) -> str | None:
         return self._data.get(key)
@@ -50,7 +55,11 @@ class LLMCache:
 
 
 def strip_think(text: str) -> str:
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    # Remove closed think blocks
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    # Remove unclosed think blocks (from <think> to end)
+    text = re.sub(r"<think>.*$", "", text, flags=re.DOTALL)
+    return text.strip()
 
 
 def guard(raw: str, cleaned: str, tol: float = 0.25) -> str | None:
@@ -72,7 +81,9 @@ def _chat(client, model: str, messages: list[dict], cache: LLMCache) -> str:
         return hit
     resp = retry_call(lambda: client.chat.completions.create(model=model, messages=messages, temperature=0))
     out = strip_think(resp.choices[0].message.content or "")
-    cache.set(key, out)
+    # Only cache non-empty results
+    if out.strip():
+        cache.set(key, out)
     return out
 
 
@@ -89,8 +100,12 @@ def build_glossary(client, model: str, slides, cache: LLMCache, max_chars: int =
         chunks.append("".join(current))
     seen: dict[str, str] = {}
     for chunk in chunks:
-        reply = _chat(client, model, [{"role": "system", "content": GLOSSARY_SYSTEM},
-                                      {"role": "user", "content": chunk}], cache)
+        try:
+            reply = _chat(client, model, [{"role": "system", "content": GLOSSARY_SYSTEM},
+                                          {"role": "user", "content": chunk}], cache)
+        except Exception as exc:
+            log.warning("build_glossary chunk extraction failed: %s", exc)
+            continue
         for line in reply.splitlines():
             term = re.sub(r"^\s*[-*•\d.)]+\s*", "", line).strip()
             if term:
@@ -104,6 +119,9 @@ def _slide_text(slides, number: int) -> str:
 
 def cleanup_spans(client, model: str, glossary: str, outline: str, slides, spans, raws: list[str],
                   cache: LLMCache, workers: int = 4) -> list[str]:
+    if len(spans) != len(raws):
+        raise ValueError(f"len(spans)={len(spans)} != len(raws)={len(raws)}")
+
     def clean_one(span, raw: str) -> str:
         if not raw.strip():
             return raw
