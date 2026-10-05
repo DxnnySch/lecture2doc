@@ -59,14 +59,19 @@ def read_pptx(pptx_path) -> list[tuple[str | None, str]]:
 
 def load_slides(pdf_path, pptx_path) -> list[Slide]:
     images, pdf_texts = render_pdf(pdf_path)
-    pptx = read_pptx(pptx_path)
-    if len(pptx) == len(images):
+    try:
+        pptx = read_pptx(pptx_path)
+    except Exception as e:  # corrupt zip / bad CRC in an embedded media part, etc.
+        log.warning("cannot read PPTX (%s: %s); using PDF text for titles", type(e).__name__, e)
+        pptx = None
+    if pptx is not None and len(pptx) == len(images):
         return [
             Slide(i + 1, title, body or pdf_texts[i].strip(), img)
             for i, ((title, body), img) in enumerate(zip(pptx, images))
         ]
-    log.warning(
-        "PPTX has %d visible slides but the PDF has %d pages: slide count does not match; "
-        "using PDF text for titles", len(pptx), len(images),
-    )
+    if pptx is not None:
+        log.warning(
+            "PPTX has %d visible slides but the PDF has %d pages: slide count does not match; "
+            "using PDF text for titles", len(pptx), len(images),
+        )
     return [Slide(i + 1, _first_line(t), t.strip(), img) for i, (t, img) in enumerate(zip(pdf_texts, images))]

@@ -34,3 +34,13 @@ def test_count_mismatch_falls_back_to_pdf_titles(tmp_path, caplog):
         slides = load_slides(pdf, pptx)
     assert [s.title for s in slides] == ["Title 1", "Title 2", "Title 3"]
     assert "does not match" in caplog.text
+
+
+def test_unreadable_pptx_falls_back_to_pdf_titles(tmp_path, caplog):
+    pdf = make_pdf(tmp_path / "a.pdf", 3)
+    bad = tmp_path / "bad.pptx"
+    bad.write_bytes(b"this is not a zip file")
+    with caplog.at_level(logging.WARNING):
+        slides = load_slides(pdf, bad)
+    assert [s.title for s in slides] == ["Title 1", "Title 2", "Title 3"]
+    assert "cannot read PPTX" in caplog.text
