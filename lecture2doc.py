@@ -17,6 +17,7 @@ import openai
 
 from api import make_client
 from cleanup import LLMCache, build_glossary, build_outline, cleanup_spans
+from align import snap_to_sentences
 from config import ConfigError, check_ffmpeg, load_config
 from docx_out import SpanText, write_docx
 from segment import (Span, absorb_unmatched, build_spans, extract_frames, match_frames, probe_aspect,
@@ -49,6 +50,10 @@ def parse_args(argv):
     p.add_argument("--interval", type=float, default=1.0, help="seconds between sampled frames")
     p.add_argument("--threshold", type=float, default=0.6, help="minimum match score for a frame to count")
     p.add_argument("--smooth", type=int, default=5, help="majority-vote window in frames")
+    p.add_argument("--snap-seconds", type=float, default=4.0,
+                   help="move a slide change that falls inside a sentence to the nearer end of that sentence if it "
+                        "is at most this many seconds away, so a sentence is not split between two slides "
+                        "(default 4, 0 = cut exactly at the slide change)")
     return p.parse_args(argv)
 
 
@@ -191,7 +196,8 @@ def main(argv=None) -> int:
         raise SystemExit(str(exc)) from None
     except openai.APIError as exc:
         raise SystemExit(f"speech-to-text failed: {exc}") from None
-    raws = assign_words(words, spans)
+    text_spans = snap_to_sentences(words, spans, args.snap_seconds)  # where the text is cut; spans keep screen times
+    raws = assign_words(words, text_spans)
 
     if args.no_cleanup:
         cleans = raws
@@ -206,7 +212,8 @@ def main(argv=None) -> int:
     (workdir / "segments.json").write_text(json.dumps({
         "video": str(video),
         "spans": [{"slide": s.slide, "start": s.start, "end": s.end, "confidence": round(s.confidence, 3),
-                   "raw": r, "clean": c} for s, r, c in zip(spans, raws, cleans)],
+                   "text_start": t.start, "text_end": t.end, "raw": r, "clean": c}
+                  for s, t, r, c in zip(spans, text_spans, raws, cleans)],
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     write_docx(out, video.stem, slides,

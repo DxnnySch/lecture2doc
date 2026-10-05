@@ -49,6 +49,7 @@ Intermediate files go to the work directory (default `output/<video stem>/`): `w
 | `--interval` | seconds between sampled frames (default 1.0) |
 | `--threshold` | minimum match score for a frame to count (default 0.6) |
 | `--smooth` | majority-vote window in frames (default 5) |
+| `--snap-seconds` | move a slide change that falls inside a sentence to the nearer end of that sentence if it is at most this many seconds away (default 4, `0` = cut exactly at the slide change) |
 
 A summary after matching lists seconds matched per slide, the unmatched percentage, and slides never shown. Many unmatched seconds or flicker between neighbouring slides: tune `--threshold` (0.5-0.8) and `--smooth` (3-9); this reruns quickly because STT is cached.
 
@@ -61,6 +62,12 @@ A summary after matching lists seconds matched per slide, the unmatched percenta
 ```
 
 Words are re-assigned to the edited spans using the cached `words.json`.
+
+## Where the text is cut between slides
+
+A lecturer rarely clicks to the next slide exactly between two sentences, so cutting the transcript at the exact click would put the last words of a sentence on the next slide. After matching, every cut that falls inside a sentence is moved to the nearer end of that sentence (sentence ends come from the punctuation of the transcript; common abbreviations such as `e.g.`, `z.B.`, `Dr.` do not count), as long as that is at most `--snap-seconds` away and no slide is left shorter than a second. The time ranges shown under the slide headings are not affected: they stay the real on-screen times, while `segments.json` records where the text was cut as `text_start`/`text_end`.
+
+This is applied when the text is assigned to slides, so a finished run needs `--from-segments` (not `--rebuild`) to pick it up: that reuses the saved slide times and the STT cache and only sends the spans whose text changed to the LLM again.
 
 ## Rebuild the document offline
 

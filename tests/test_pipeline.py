@@ -333,3 +333,41 @@ def test_page_breaks_by_default_and_no_page_breaks_option(tmp_path, monkeypatch)
     lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(rebuilt), "--workdir", str(tmp_path / "w"),
                       "--rebuild", "--no-page-breaks"])
     assert flags(rebuilt) == [None, None, None]
+
+
+def snap_setup(tmp_path, monkeypatch):
+    """The lecturer clicks to the next slide (~t=4) while still finishing a sentence that ends at 4.6."""
+    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    words = [Word("done.", 0.5, 0.9), Word("Then", 3.1, 3.3), Word("more", 3.4, 3.6), Word("words", 3.7, 3.9),
+             Word("end.", 4.2, 4.6), Word("Next", 5.0, 5.4), Word("slide.", 5.6, 5.9)]
+    monkeypatch.setattr(lecture2doc, "transcribe_words", lambda *a, **k: words)
+    return video, pdf, pptx
+
+
+def slide_paragraphs(path, number):
+    """Text paragraphs under the heading of the given slide."""
+    out, inside = [], False
+    for p in Document(path).paragraphs:
+        if p.style.name == "Heading 1":
+            inside = p.text.startswith(f"Slide {number} ")
+        elif inside and p.style.name == "Normal" and p.text:  # the thumbnail's paragraph has no text
+            out.append(re.sub(r"^\[[\d:]+\] ", "", p.text))
+    return out
+
+
+def test_sentence_tail_stays_with_its_slide_by_default(tmp_path, monkeypatch):
+    video, pdf, pptx = snap_setup(tmp_path, monkeypatch)
+    out = run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    assert any(t.endswith("Then more words end.") for t in slide_paragraphs(out, 1))
+    assert slide_paragraphs(out, 2) == ["Next slide."]
+    seg = json.loads((tmp_path / "w" / "segments.json").read_text(encoding="utf-8"))
+    first, second = seg["spans"][0], seg["spans"][1]
+    assert first["end"] <= 5.0 and first["text_end"] > first["end"] - 1  # visual time stays on-screen time
+    assert first["text_end"] == second["text_start"] and 4.6 < first["text_end"] < 5.0
+
+
+def test_snap_seconds_zero_keeps_the_raw_cut(tmp_path, monkeypatch):
+    video, pdf, pptx = snap_setup(tmp_path, monkeypatch)
+    out = run(video, pdf, pptx, tmp_path, "--no-cleanup", "--snap-seconds", "0")
+    assert not any("end." in t for t in slide_paragraphs(out, 1))
+    assert slide_paragraphs(out, 2) == ["end. Next slide."]
