@@ -1,7 +1,8 @@
 import pytest
 from config import ConfigError, load_config
 
-KEYS = ["SCADS_API_KEY", "SCADS_BASE_URL", "SCADS_STT_MODEL", "SCADS_LLM_MODEL", "SCADS_GLOSSARY_MODEL"]
+KEYS = ["SCADS_API_KEY", "SCADS_BASE_URL", "SCADS_STT_MODEL", "SCADS_LLM_MODEL", "SCADS_GLOSSARY_MODEL",
+        "SCADS_REQUESTS_PER_MINUTE"]
 
 
 @pytest.fixture(autouse=True)
@@ -40,3 +41,15 @@ def test_missing_key_raises_without_leaking(tmp_path):
     env.write_text("SCADS_BASE_URL=x\n")
     with pytest.raises(ConfigError, match="SCADS_API_KEY"):
         load_config(env)
+
+
+def test_requests_per_minute_default_override_and_validation(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("SCADS_API_KEY=k\n")
+    assert load_config(env).requests_per_minute == 25
+    env.write_text("SCADS_API_KEY=k\nSCADS_REQUESTS_PER_MINUTE=7\n")
+    assert load_config(env).requests_per_minute == 7
+    for bad in ("0", "-3", "many", "2.5"):
+        env.write_text(f"SCADS_API_KEY=k\nSCADS_REQUESTS_PER_MINUTE={bad}\n")
+        with pytest.raises(ConfigError, match="SCADS_REQUESTS_PER_MINUTE"):
+            load_config(env)

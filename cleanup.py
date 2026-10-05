@@ -79,12 +79,17 @@ def build_outline(slides) -> str:
     return "\n".join(f"{s.number}. {s.title or '(untitled)'}" for s in slides)
 
 
-def _chat(client, model: str, messages: list[dict], cache: LLMCache) -> str:
+def _chat(client, model: str, messages: list[dict], cache: LLMCache, limiter=None) -> str:
     key = hashlib.sha256(json.dumps([model, messages], ensure_ascii=False).encode()).hexdigest()
     hit = cache.get(key)
     if hit is not None:
         return hit
-    resp = retry_call(lambda: client.chat.completions.create(model=model, messages=messages, temperature=0))
+    def call():
+        if limiter is not None:
+            limiter.wait()  # every attempt, including retries, counts against the quota
+        return client.chat.completions.create(model=model, messages=messages, temperature=0)
+
+    resp = retry_call(call)
     out = strip_think(resp.choices[0].message.content or "")
     # Only cache non-empty results
     if out.strip():
@@ -92,7 +97,7 @@ def _chat(client, model: str, messages: list[dict], cache: LLMCache) -> str:
     return out
 
 
-def build_glossary(client, model: str, slides, cache: LLMCache, max_chars: int = 40000) -> str:
+def build_glossary(client, model: str, slides, cache: LLMCache, max_chars: int = 40000, limiter=None) -> str:
     chunks, current, size = [], [], 0
     for s in slides:
         piece = f"Slide {s.number} ({s.title or 'untitled'}):\n{s.text}\n"
@@ -107,7 +112,7 @@ def build_glossary(client, model: str, slides, cache: LLMCache, max_chars: int =
     for chunk in chunks:
         try:
             reply = _chat(client, model, [{"role": "system", "content": GLOSSARY_SYSTEM},
-                                          {"role": "user", "content": chunk}], cache)
+                                          {"role": "user", "content": chunk}], cache, limiter)
         except Exception as exc:
             log.warning("build_glossary chunk extraction failed: %s", exc)
             continue
@@ -123,7 +128,7 @@ def _slide_text(slides, number: int) -> str:
 
 
 def cleanup_spans(client, model: str, glossary: str, outline: str, slides, spans, raws: list[str],
-                  cache: LLMCache, workers: int = 4) -> list[str]:
+                  cache: LLMCache, workers: int = 4, limiter=None) -> list[str]:
     if len(spans) != len(raws):
         raise ValueError(f"len(spans)={len(spans)} != len(raws)={len(raws)}")
 
@@ -140,7 +145,7 @@ def cleanup_spans(client, model: str, glossary: str, outline: str, slides, spans
         )
         try:
             cleaned = _chat(client, model, [{"role": "system", "content": CLEAN_SYSTEM},
-                                            {"role": "user", "content": user}], cache)
+                                            {"role": "user", "content": user}], cache, limiter)
         except Exception as exc:  # degrade to raw rather than abort the whole lecture
             log.warning("cleanup failed for slide %s span at %.0fs (%s); using raw transcript", n, span.start, exc)
             return raw

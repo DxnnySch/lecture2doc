@@ -15,7 +15,7 @@ from pathlib import Path
 
 import openai
 
-from api import make_client
+from api import RateLimiter, make_client
 from cleanup import LLMCache, build_glossary, build_outline, cleanup_spans
 from align import snap_to_sentences
 from config import ConfigError, check_ffmpeg, load_config
@@ -205,9 +205,10 @@ def main(argv=None) -> int:
         print("Cleaning up transcripts...")
         client = make_client(cfg)
         cache = LLMCache(workdir / "llm_cache.json")
+        limiter = RateLimiter(cfg.requests_per_minute)  # one shared quota for the glossary and all cleanup calls
         outline = build_outline(slides)
-        glossary = build_glossary(client, cfg.glossary_model, slides, cache)
-        cleans = cleanup_spans(client, cfg.llm_model, glossary, outline, slides, spans, raws, cache)
+        glossary = build_glossary(client, cfg.glossary_model, slides, cache, limiter=limiter)
+        cleans = cleanup_spans(client, cfg.llm_model, glossary, outline, slides, spans, raws, cache, limiter=limiter)
 
     (workdir / "segments.json").write_text(json.dumps({
         "video": str(video),

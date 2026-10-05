@@ -1,3 +1,5 @@
+import httpx2
+import openai
 import logging
 from types import SimpleNamespace as NS
 
@@ -242,3 +244,44 @@ def test_llm_cache_failed_replace_keeps_old_file_and_cleans_tmp(tmp_path, monkey
     monkeypatch.undo()
     assert [p.name for p in tmp_path.iterdir()] == ["llm_cache.json"]
     assert LLMCache(path).get("b") is None and LLMCache(path).get("a") == "one"
+
+
+class CountingLimiter:
+    def __init__(self):
+        self.waits = 0
+
+    def wait(self):
+        self.waits += 1
+
+
+def test_limiter_is_used_once_per_real_llm_call_but_not_for_cache_hits_or_empty_text():
+    limiter = CountingLimiter()
+    client = FakeClient("The gradient descent works.")
+    cache = LLMCache(None)
+    spans = [Span(1, 0, 5, 1), Span(2, 5, 9, 1), Span(3, 9, 12, 1)]
+    raws = ["The grading descent works.", "", "The grading descent works."]  # empty raw: no call
+    cleanup_spans(client, "m", "g", "o", slides(), spans, raws, cache, limiter=limiter)
+    assert limiter.waits == len(client.calls) == 2  # slides differ, so both go to the model
+    cleanup_spans(client, "m", "g", "o", slides(), spans, raws, cache, limiter=limiter)
+    assert limiter.waits == 2  # everything is cached now
+    build_glossary(client, "m", slides(), cache, limiter=limiter)
+    assert limiter.waits == 3
+
+
+def test_each_retry_attempt_counts_against_the_limiter():
+    limiter = CountingLimiter()
+    attempts = []
+
+    def reply(messages):
+        attempts.append(1)
+        return openai.RateLimitError("slow down", response=httpx2.Response(429, request=httpx2.Request("POST", "http://x")), body=None) if len(attempts) < 3 else "The gradient descent works."
+
+    import api
+    real_sleep = api.time.sleep
+    api.time.sleep = lambda s: None  # do not really wait 15+30 s
+    try:
+        out = cleanup_spans(FakeClient(reply), "m", "g", "o", slides(), [Span(1, 0, 5, 1)],
+                            ["The grading descent works."], LLMCache(None), limiter=limiter)
+    finally:
+        api.time.sleep = real_sleep
+    assert out == ["The gradient descent works."] and limiter.waits == 3

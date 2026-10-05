@@ -19,6 +19,7 @@ How it works: video frames are sampled and matched against the PDF pages to find
    - `SCADS_STT_MODEL` - speech-to-text model alias, default `alias-stt`
    - `SCADS_LLM_MODEL` - model for transcript cleanup, default `alias-huge-no-thinking`
    - `SCADS_GLOSSARY_MODEL` - optional separate model for the glossary step (e.g. a reasoning model); defaults to `SCADS_LLM_MODEL`
+   - `SCADS_REQUESTS_PER_MINUTE` - cap for LLM requests per minute, default `25` (the gateway allowed 30 per key and model when this was written); lower it if your key has a smaller quota
 
 ## Usage
 
@@ -84,4 +85,4 @@ It reads `<workdir>/segments.json` (or the file given with `--from-segments`), o
 - The tool assumes a single speaker: there is no diarization and no speaker labels. No summaries either; the output is the transcript only.
 - Slide matching relies on the video showing the slides; talking-head-only stretches are attached to the neighbouring slide.
 - LLM cleanup can occasionally misjudge a term; use `--keep-raw` to compare, or `--no-cleanup`.
-- The API can be slow; a full lecture's cleanup may take a while.
+- The API can be slow; a full lecture's cleanup may take a while. The LLM requests are throttled to `SCADS_REQUESTS_PER_MINUTE`, and a rate-limit error (HTTP 429) is retried after the server's `Retry-After` time or, without one, after 15/30/60 seconds. Results are cached, so an interrupted or partly failed run only repeats the missing calls.

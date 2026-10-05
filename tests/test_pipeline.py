@@ -5,6 +5,7 @@ import pytest
 from docx import Document
 
 import lecture2doc
+from api import RateLimiter
 from helpers import make_pdf, make_pptx, make_video
 from slides import render_pdf
 from transcribe import Word
@@ -152,16 +153,19 @@ def test_cleanup_wiring(tmp_path, monkeypatch):
     video, pdf, pptx = setup(tmp_path, monkeypatch)
     monkeypatch.setenv("SCADS_LLM_MODEL", "llm-x")
     monkeypatch.setenv("SCADS_GLOSSARY_MODEL", "glos-y")
+    monkeypatch.setenv("SCADS_REQUESTS_PER_MINUTE", "7")
     dummy = object()
     calls = {}
     monkeypatch.setattr(lecture2doc, "make_client", lambda cfg: dummy)
 
-    def fake_glossary(client, model, slides, cache):
+    def fake_glossary(client, model, slides, cache, limiter=None):
         calls["glossary"] = (client, model)
+        calls["glossary_limiter"] = limiter
         return "GLOSS"
 
-    def fake_cleanup(client, model, glossary, outline, slides, spans, raws, cache):
+    def fake_cleanup(client, model, glossary, outline, slides, spans, raws, cache, limiter=None):
         calls["cleanup"] = (client, model, glossary)
+        calls["cleanup_limiter"] = limiter
         return [f"CLEAN<{r}>" for r in raws]
 
     monkeypatch.setattr(lecture2doc, "build_glossary", fake_glossary)
@@ -169,6 +173,8 @@ def test_cleanup_wiring(tmp_path, monkeypatch):
     out = run(video, pdf, pptx, tmp_path)
     assert calls["glossary"] == (dummy, "glos-y")
     assert calls["cleanup"] == (dummy, "llm-x", "GLOSS")
+    assert isinstance(calls["cleanup_limiter"], RateLimiter) and calls["cleanup_limiter"].max_calls == 7
+    assert calls["glossary_limiter"] is calls["cleanup_limiter"]  # one shared quota for both stages
     texts = [p.text for p in Document(out).paragraphs]
     assert "CLEAN<world>" in texts and "world" not in texts
     seg = json.loads((tmp_path / "w" / "segments.json").read_text(encoding="utf-8"))
