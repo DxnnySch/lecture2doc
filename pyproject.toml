@@ -17,6 +17,9 @@ lecture2doc = "lecture2doc.cli:main"
 [tool.setuptools]
 packages = ["lecture2doc"]
 
+[tool.setuptools.package-data]
+lecture2doc = ["ui_static/*.html"]
+
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
 

@@ -131,11 +131,30 @@ def _slide_text(slides, number: int) -> str:
 
 
 def cleanup_spans(client, model: str, glossary: str, outline: str, slides, spans, raws: list[str],
-                  cache: LLMCache, workers: int = 4, limiter=None) -> list[str]:
+                  cache: LLMCache, workers: int = 4, limiter=None, on_progress=None) -> list[str]:
     if len(spans) != len(raws):
         raise ValueError(f"len(spans)={len(spans)} != len(raws)={len(raws)}")
 
+    finished = [0]
+    lock = threading.Lock()
+    stopped = threading.Event()
+
     def clean_one(span, raw: str) -> str:
+        if stopped.is_set():
+            return raw
+        result = clean_text(span, raw)
+        if on_progress is not None:
+            with lock:
+                finished[0] += 1
+                count = finished[0]
+            try:
+                on_progress(count, len(spans))
+            except BaseException:  # e.g. the user cancelled: do not start the remaining parts
+                stopped.set()
+                raise
+        return result
+
+    def clean_text(span, raw: str) -> str:
         if not raw.strip():
             return raw
         n = span.slide

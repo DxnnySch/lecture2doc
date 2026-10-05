@@ -58,11 +58,12 @@ def _load_cache(path: Path, meta: dict) -> dict[str, str]:
 
 
 def transcribe_clips(cfg, media, clips, cache_path, language: str | None = None, client=None, limiter=None,
-                     workers: int = 4) -> list[str]:
+                     workers: int = 4, on_progress=None) -> list[str]:
     """The text of every clip (a list as long as `clips`; "" for clips without speech).
 
     Finished clips are cached at once, so a failed or interrupted run only repeats the clips still missing. The
-    first error (an API error, ffmpeg failing) stops the remaining work and is raised."""
+    first error (an API error, ffmpeg failing) stops the remaining work and is raised. `on_progress(done, total)` is
+    called after every clip that had to be transcribed; an exception it raises stops the run like an error."""
     cache_path = Path(cache_path)
     meta = {"video": Path(media).name, "size": Path(media).stat().st_size, "language": language}
     done = _load_cache(cache_path, meta)
@@ -103,7 +104,14 @@ def transcribe_clips(cfg, media, clips, cache_path, language: str | None = None,
                     log.warning("could not save the transcription cache %s (%s); continuing without saving",
                                 cache_path, exc)
                 finished[0] += 1
-                print(f"  transcribed clip {finished[0]}/{len(todo)}", flush=True)
+                count = finished[0]
+            if on_progress is not None:
+                try:
+                    on_progress(count, len(todo))
+                except BaseException as exc:  # e.g. the user cancelled: stop the remaining clips
+                    with lock:
+                        errors.append(exc)
+                    stop.set()
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
             list(pool.map(work, todo))

@@ -2,7 +2,6 @@ from pathlib import Path
 
 import numpy as np
 import pymupdf
-from pptx import Presentation
 
 
 def make_pdf(path: Path, n: int, titles: list[str] | None = None, width: int = 960, height: int = 540,
@@ -20,22 +19,6 @@ def make_pdf(path: Path, n: int, titles: list[str] | None = None, width: int = 9
         if numbers:
             page.insert_text((width - 79, height - 32), str(i + 1), fontsize=14)
     doc.save(path)
-    return path
-
-
-def make_pptx(path: Path, slides: list[tuple[str | None, str, bool]]) -> Path:
-    prs = Presentation()
-    for title, body, hidden in slides:
-        s = prs.slides.add_slide(prs.slide_layouts[1])
-        if title is None:
-            el = s.shapes.title._element
-            el.getparent().remove(el)
-        else:
-            s.shapes.title.text = title
-        s.placeholders[1].text = body
-        if hidden:
-            s._element.set("show", "0")
-    prs.save(path)
     return path
 
 

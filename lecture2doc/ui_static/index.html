@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lecture2doc</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1d2330; --muted: #667085; --line: #e3e6ec;
+    --accent: #2f5bea; --accent-text: #ffffff; --accent-soft: #e8eeff;
+    --ok: #138a4b; --ok-soft: #e3f6ec; --err: #c0392b; --err-soft: #fdeceb; --warn-soft: #fff4dc; --warn: #8a5a00;
+    --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151c; --card: #1b1f29; --text: #e8ebf2; --muted: #9aa3b5; --line: #2b3140;
+      --accent: #6f8cff; --accent-text: #0e1220; --accent-soft: #232b45;
+      --ok: #4cc58a; --ok-soft: #173a2a; --err: #ff8478; --err-soft: #3d1f1d; --warn-soft: #3a2f15; --warn: #f1c45f;
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 28px 20px 120px; }
+  h1 { font-size: 26px; margin: 0; letter-spacing: -.02em; }
+  .tagline { color: var(--muted); margin: 4px 0 22px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow);
+          padding: 18px 20px; margin-bottom: 16px; }
+  h2 { font-size: 16px; margin: 0 0 14px; display: flex; align-items: center; gap: 10px; }
+  .step { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+          background: var(--accent); color: var(--accent-text); font-size: 13px; font-weight: 700; }
+  .hint { color: var(--muted); font-size: 13px; font-weight: 400; margin-left: auto; }
+  button { font: inherit; cursor: pointer; border-radius: 9px; border: 1px solid var(--line); background: var(--card);
+           color: var(--text); padding: 7px 14px; }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600;
+                   padding: 10px 22px; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.08); color: var(--accent-text); }
+  button.small { padding: 4px 10px; font-size: 13px; }
+  button.link { border: 0; background: none; color: var(--muted); padding: 4px 6px; font-size: 13px; }
+  input[type=text], select, textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+                                       border-radius: 9px; padding: 8px 10px; min-width: 0; }
+  input[type=text]:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .folder { display: grid; grid-template-columns: 150px 1fr auto; gap: 10px; align-items: center; margin-bottom: 10px; }
+  .folder label { font-weight: 600; }
+  .folder .note { grid-column: 2 / 4; margin-top: -4px; font-size: 13px; color: var(--muted); }
+  .banner { border-radius: 12px; padding: 12px 16px; margin-bottom: 16px; background: var(--warn-soft); color: var(--warn);
+            border: 1px solid var(--line); }
+  .banner code { background: rgba(127,127,127,.18); padding: 1px 5px; border-radius: 5px; }
+  .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; color: var(--muted); font-size: 14px; }
+  .empty { text-align: center; color: var(--muted); padding: 26px 8px; }
+  .lecture { display: grid; grid-template-columns: 28px 1fr 250px 118px; gap: 14px; align-items: start;
+             padding: 14px 4px; border-top: 1px solid var(--line); }
+  .lecture:first-of-type { border-top: 0; }
+  .lecture input[type=checkbox] { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--accent); }
+  .name { font-weight: 600; word-break: break-word; }
+  .pdfrow { display: flex; align-items: center; gap: 8px; margin-top: 6px; color: var(--muted); font-size: 13px; }
+  .pdfrow select { padding: 4px 8px; font-size: 13px; max-width: 100%; flex: 1; }
+  .pdfrow.missing select { border-color: var(--err); }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 99px; font-size: 12px; font-weight: 600;
+          background: var(--bg); color: var(--muted); }
+  .pill.running, .pill.queued { background: var(--accent-soft); color: var(--accent); }
+  .pill.done { background: var(--ok-soft); color: var(--ok); }
+  .pill.error { background: var(--err-soft); color: var(--err); }
+  .bar { height: 8px; border-radius: 99px; background: var(--bg); overflow: hidden; margin: 8px 0 5px; border: 1px solid var(--line); }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 99px; transition: width .6s ease; }
+  .bar.done > i { background: var(--ok); }
+  .bar.indeterminate > i { width: 35% !important; animation: slide 1.4s ease-in-out infinite; }
+  @keyframes slide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+  .stage { font-size: 13px; color: var(--muted); }
+  .stage b { color: var(--text); font-weight: 600; }
+  .error-text { color: var(--err); font-size: 13px; margin-top: 6px; word-break: break-word; }
+  .actions { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+  .log { grid-column: 2 / 5; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px;
+         font: 12px/1.5 ui-monospace, Consolas, monospace; max-height: 160px; overflow: auto; white-space: pre-wrap; display: none; }
+  details.options summary { cursor: pointer; font-weight: 600; }
+  .optgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 8px 22px; margin-top: 14px; }
+  .optgrid label { display: flex; gap: 8px; align-items: flex-start; }
+  .optgrid input[type=checkbox] { margin-top: 4px; accent-color: var(--accent); }
+  .optgrid small { display: block; color: var(--muted); }
+  .footer { position: fixed; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--line);
+            padding: 12px 20px; }
+  .footer > div { max-width: 980px; margin: 0 auto; display: flex; gap: 12px; align-items: center; }
+  .footer .total { flex: 1; color: var(--muted); }
+  .footer .total b { color: var(--text); }
+  dialog { border: 1px solid var(--line); border-radius: 16px; padding: 0; width: min(640px, 94vw); background: var(--card);
+           color: var(--text); box-shadow: 0 20px 60px rgba(0, 0, 0, .35); }
+  dialog::backdrop { background: rgba(10, 12, 18, .55); }
+  .dlg { padding: 20px; display: flex; flex-direction: column; gap: 12px; max-height: 86vh; }
+  .dlg h3 { margin: 0; font-size: 18px; }
+  .dlg p { margin: 0; color: var(--muted); font-size: 14px; }
+  .terms { overflow: auto; border: 1px solid var(--line); border-radius: 10px; padding: 6px; min-height: 180px; max-height: 44vh; }
+  .term { display: flex; gap: 6px; margin: 3px 0; }
+  .term input { flex: 1; padding: 5px 9px; }
+  .term button { padding: 3px 10px; color: var(--muted); }
+  .term button:hover { color: var(--err) !important; border-color: var(--err) !important; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > input { flex: 1; }
+  .grow { flex: 1; }
+  .spinner { color: var(--muted); padding: 30px; text-align: center; }
+  @media (max-width: 720px) {
+    .folder { grid-template-columns: 1fr auto; } .folder label { grid-column: 1 / 3; }
+    .folder .note { grid-column: 1 / 3; }
+    .lecture { grid-template-columns: 28px 1fr; } .lecture .statuscell, .lecture .actions { grid-column: 2; }
+    .actions { flex-direction: row; flex-wrap: wrap; } .log { grid-column: 1 / 3; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>lecture2doc</h1>
+  <p class="tagline">Turn lecture videos and their slides into Word documents with a transcript per slide.</p>
+
+  <div id="banner"></div>
+
+  <section class="card">
+    <h2><span class="step">1</span> Folders</h2>
+    <div class="folder"><label for="pdf_dir">Slides (PDF)</label><input type="text" id="pdf_dir" placeholder="Folder with the lecture PDFs"><button data-pick="pdf_dir">Browse…</button></div>
+    <div class="folder"><label for="video_dir">Videos</label><input type="text" id="video_dir" placeholder="Folder with the lecture videos"><button data-pick="video_dir">Browse…</button></div>
+    <div class="folder"><label for="out_dir">Save Word files in</label><input type="text" id="out_dir" placeholder="Where the .docx files go"><button data-pick="out_dir">Browse…</button>
+      <div class="note">Each video is matched with the PDF of the same name. You can change the match per lecture below.</div></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="step">2</span> Lectures <span class="hint" id="found"></span></h2>
+    <div class="toolbar"><label><input type="checkbox" id="all"> Select all</label><span class="grow"></span>
+      <button class="small" id="open-out">Open output folder</button></div>
+    <div id="lectures"></div>
+  </section>
+
+  <section class="card">
+    <details class="options">
+      <summary><span class="step">3</span>&nbsp; Document options</summary>
+      <div class="optgrid" id="options"></div>
+    </details>
+  </section>
+</main>
+
+<div class="footer"><div>
+  <span class="total" id="total"></span>
+  <button id="stop" hidden>Stop</button>
+  <button class="primary" id="go" disabled>Process selected</button>
+</div></div>
+
+<dialog id="glossary">
+  <div class="dlg">
+    <h3>Glossary: <span id="g-title"></span></h3>
+    <p>Terms from the slides that the AI uses to fix recognition errors in the transcript. Remove wrong ones, correct spellings, add missing names. Changes apply the next time you process this lecture.</p>
+    <div class="row"><input type="text" id="g-filter" placeholder="Filter terms…"><span id="g-count" class="stage"></span></div>
+    <div class="terms" id="g-terms"></div>
+    <div class="row"><input type="text" id="g-new" placeholder="Add a term and press Enter"><button id="g-add">Add</button></div>
+    <div class="error-text" id="g-error"></div>
+    <div class="row"><button class="small link" id="g-regen" title="Builds the glossary again from the slides and replaces your list">Rebuild from slides</button>
+      <span class="grow"></span><button id="g-cancel">Cancel</button><button class="primary" id="g-save">Save glossary</button></div>
+  </div>
+</dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, ...kids) => {
+  const n = Object.assign(document.createElement(tag), props);
+  for (const k of kids) n.append(k);
+  return n;
+};
+let S = null;                    // last state from the server
+const selected = new Set();
+const open = new Set();          // lectures whose log is expanded
+let signature = "";
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+const fail = (e) => alert(e.message || e);
+
+/* ---------- folders ---------- */
+for (const key of ["pdf_dir", "video_dir", "out_dir"]) {
+  $(key).addEventListener("change", () => api("/api/folders", { [key]: $(key).value }).then(poll, fail));
+}
+document.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", async () => {
+  const key = b.dataset.pick;
+  b.disabled = true; b.textContent = "Choosing…";
+  try {
+    const { path } = await api("/api/pick", { kind: key });
+    if (path) { $(key).value = path; await api("/api/folders", { [key]: path }); await poll(); }
+  } catch (e) { fail(e); }
+  b.disabled = false; b.textContent = "Browse…";
+}));
+$("open-out").addEventListener("click", () => api("/api/open", { kind: "folder" }).catch(fail));
+
+/* ---------- options ---------- */
+const OPTIONS = [
+  ["cleanup", "Clean up the text with AI", "Fixes recognition errors using the glossary. Off = raw transcript."],
+  ["thumbnails", "Slide thumbnails", "Show a small picture of the slide on every page."],
+  ["timestamps", "Video time under each heading", "For example 12:30 – 15:02."],
+  ["page_breaks", "Every slide on a new page", "Off = more compact document."],
+  ["group_by_slide", "Group by slide", "One section per slide in slide order, instead of lecture order."],
+  ["keep_raw", "Also include the raw transcript", "Useful to compare with the cleaned text."],
+];
+const optBox = $("options");
+for (const [key, label, hint] of OPTIONS) {
+  const box = el("input", { type: "checkbox", id: "opt-" + key });
+  box.addEventListener("change", () => api("/api/options", { [key]: box.checked }).catch(fail));
+  optBox.append(el("label", {}, box, el("span", {}, label, el("small", { textContent: hint }))));
+}
+const lang = el("input", { type: "text", id: "opt-language", placeholder: "auto-detect", size: 12 });
+lang.addEventListener("change", () => api("/api/options", { language: lang.value }).catch(fail));
+optBox.append(el("label", {}, el("span", {}, "Spoken language ", lang, el("small", { textContent: "Language code such as en or de. Leave empty to detect it." }))));
+
+/* ---------- lectures ---------- */
+const fmtTime = (s) => { s = Math.max(0, Math.round(s)); const m = Math.floor(s / 60); return m + ":" + String(s % 60).padStart(2, "0"); };
+
+function buildLectures() {
+  const host = $("lectures");
+  host.replaceChildren();
+  if (!S.lectures.length) {
+    host.append(el("div", { className: "empty", textContent: S.settings.video_dir ? "No videos found in this folder (mp4, mkv, mov, avi, webm, m4v)." : "Choose the folder with your lecture videos above." }));
+    return;
+  }
+  for (const L of S.lectures) {
+    const box = el("input", { type: "checkbox", checked: selected.has(L.video) });
+    box.addEventListener("change", () => { box.checked ? selected.add(L.video) : selected.delete(L.video); refreshFooter(); });
+    const sel = el("select");
+    sel.append(el("option", { value: "", textContent: "– choose the slides –" }));
+    for (const p of S.pdfs) sel.append(el("option", { value: p, textContent: p, selected: p === L.pdf }));
+    sel.addEventListener("change", () => api("/api/pair", { video: L.video, pdf: sel.value }).then(poll, fail));
+    const pdfrow = el("div", { className: "pdfrow" + (L.pdf ? "" : " missing") }, "Slides:", sel);
+    const status = el("div", { className: "statuscell" });
+    status.dataset.video = L.video;
+    const gloss = el("button", { className: "small", textContent: "Glossary", title: "View and edit the terms the AI uses" });
+    gloss.addEventListener("click", () => openGlossary(L.video));
+    const docx = el("button", { className: "small", textContent: "Open Word file" });
+    docx.addEventListener("click", () => api("/api/open", { kind: "file", video: L.video }).catch(fail));
+    const redo = el("button", { className: "small", textContent: "Rebuild file", title: "Apply changed document options without transcribing again" });
+    redo.addEventListener("click", () => api("/api/run", { videos: [L.video], rebuild: true }).then(poll, fail));
+    const reset = el("button", { className: "small link", textContent: "Start over", title: "Forget all saved results of this lecture" });
+    reset.addEventListener("click", () => { if (confirm("Delete the saved transcript, glossary and caches of this lecture? The next run starts from scratch.")) api("/api/reset", { video: L.video }).then(poll, fail); });
+    const actions = el("div", { className: "actions" }, gloss, docx, redo, reset);
+    actions.dataset.video = L.video;
+    const log = el("div", { className: "log" });
+    log.dataset.video = L.video;
+    const row = el("div", { className: "lecture" }, box, el("div", {}, el("div", { className: "name", textContent: L.video }), pdfrow), status, actions, log);
+    row.dataset.video = L.video;
+    host.append(row);
+  }
+}
+
+function updateLectures() {
+  for (const L of S.lectures) {
+    const j = L.job, running = j.status === "running", busy = running || j.status === "queued";
+    const status = document.querySelector(`.statuscell[data-video="${CSS.escape(L.video)}"]`);
+    const actions = document.querySelector(`.actions[data-video="${CSS.escape(L.video)}"]`);
+    const log = document.querySelector(`.log[data-video="${CSS.escape(L.video)}"]`);
+    if (!status) continue;
+    const pct = Math.round((j.overall || 0) * 100);
+    const kids = [];
+    const labels = { idle: L.docx ? "Word file exists" : "Ready", queued: "Waiting in line", running: "Working", done: "Done", error: "Failed", cancelled: "Stopped" };
+    kids.push(el("span", { className: "pill " + (j.status === "idle" && L.docx ? "done" : j.status), textContent: labels[j.status] || j.status }));
+    if (busy || j.status === "done") {
+      kids.push(el("div", { className: "bar" + (j.status === "done" ? " done" : "") + (running && j.fraction === null ? " indeterminate" : "") }, el("i", { style: `width:${pct}%` })));
+      const stage = el("div", { className: "stage" });
+      if (running) {
+        stage.append(el("b", { textContent: `${pct}%  ` }), j.label + (j.detail ? " – " + j.detail : "") + `  ·  ${fmtTime(j.elapsed)}`);
+      } else if (j.status === "done") {
+        stage.append(el("b", { textContent: "100%  " }), "finished" + (j.elapsed_total != null ? ` in ${fmtTime(j.elapsed_total)}` : ""));
+      } else stage.append("Waiting for the earlier lectures");
+      kids.push(stage);
+    }
+    if (j.error) kids.push(el("div", { className: "error-text", textContent: j.error }));
+    if ((j.log || []).length) {
+      const toggle = el("button", { className: "link", textContent: open.has(L.video) ? "Hide details" : "Show details" });
+      toggle.addEventListener("click", () => { open.has(L.video) ? open.delete(L.video) : open.add(L.video); updateLectures(); });
+      kids.push(toggle);
+    }
+    status.replaceChildren(...kids);
+    log.style.display = open.has(L.video) && (j.log || []).length ? "block" : "none";
+    log.textContent = (j.log || []).join("\n");
+    const [gloss, docx, redo, reset] = actions.children;
+    gloss.disabled = !L.pdf;
+    docx.hidden = !L.docx;
+    redo.hidden = !(L.has_segments && L.docx);
+    reset.hidden = !(L.has_segments || L.has_glossary || j.status !== "idle");
+    redo.disabled = reset.disabled = busy;
+  }
+  refreshFooter();
+}
+
+function refreshFooter() {
+  const ready = S.lectures.filter((L) => selected.has(L.video) && L.pdf);
+  const busy = S.lectures.filter((L) => ["queued", "running"].includes(L.job.status));
+  const noPdf = S.lectures.filter((L) => selected.has(L.video) && !L.pdf).length;
+  const again = ready.some((L) => L.docx || L.has_segments);
+  $("go").textContent = busy.length ? "Add to queue" : again ? "Process selected (resume / redo)" : "Process selected";
+  $("go").disabled = !ready.length || !!S.problem;
+  $("stop").hidden = !busy.length;
+  let text = "";
+  if (busy.length) {
+    const sum = busy.reduce((a, L) => a + (L.job.overall || 0), 0);
+    text = `Working on ${busy.length} lecture${busy.length > 1 ? "s" : ""} · ${Math.round(100 * sum / busy.length)}% overall`;
+  } else if (selected.size) text = `${ready.length} selected` + (noPdf ? ` · ${noPdf} without slides` : "");
+  else text = "Tick the lectures you want to process.";
+  $("total").textContent = text;
+  const all = S.lectures.length && S.lectures.every((L) => selected.has(L.video));
+  $("all").checked = !!all;
+}
+$("all").addEventListener("change", (e) => {
+  S.lectures.forEach((L) => e.target.checked ? selected.add(L.video) : selected.delete(L.video));
+  document.querySelectorAll(".lecture > input[type=checkbox]").forEach((b) => (b.checked = e.target.checked));
+  refreshFooter();
+});
+$("go").addEventListener("click", () => api("/api/run", { videos: [...selected].filter((v) => S.lectures.find((L) => L.video === v && L.pdf)) }).then(poll, fail));
+$("stop").addEventListener("click", () => api("/api/cancel", {}).then(poll, fail));
+
+/* ---------- state polling ---------- */
+function render() {
+  const s = S.settings;
+  for (const key of ["pdf_dir", "video_dir", "out_dir"]) if (document.activeElement !== $(key)) $(key).value = s[key];
+  for (const [key] of OPTIONS) $("opt-" + key).checked = !!s.options[key];
+  if (document.activeElement !== lang) lang.value = s.options.language || "";
+  $("banner").replaceChildren();
+  if (S.problem) {
+    const text = /API_KEY/.test(S.problem) ? ["Add your API key first: copy ", el("code", { textContent: ".env.example" }), " to ", el("code", { textContent: ".env" }), " and put your key in it, then reload this page. (See the README.)"] : [S.problem];
+    $("banner").append(el("div", { className: "banner" }, ...text));
+  }
+  const sig = JSON.stringify([S.lectures.map((L) => [L.video, L.pdf]), S.pdfs, s.video_dir]);
+  if (sig !== signature) { signature = sig; buildLectures(); }
+  $("found").textContent = S.lectures.length ? `${S.lectures.length} video${S.lectures.length > 1 ? "s" : ""} found` : "";
+  updateLectures();
+}
+async function poll() { try { S = await api("/api/state"); render(); } catch (e) { $("total").textContent = "Lost connection to lecture2doc. Is it still running?"; } }
+poll(); setInterval(poll, 1000);
+
+/* ---------- glossary editor ---------- */
+let terms = [], gVideo = null;
+function renderTerms() {
+  const q = $("g-filter").value.trim().toLowerCase();
+  const host = $("g-terms");
+  host.replaceChildren();
+  terms.forEach((t, i) => {
+    if (q && !t.toLowerCase().includes(q)) return;
+    const input = el("input", { type: "text", value: t });
+    input.addEventListener("input", () => { terms[i] = input.value; });
+    const del = el("button", { textContent: "✕", title: "Remove this term" });
+    del.addEventListener("click", () => { terms.splice(i, 1); renderTerms(); });
+    host.append(el("div", { className: "term" }, input, del));
+  });
+  if (!host.children.length) host.append(el("div", { className: "spinner", textContent: terms.length ? "No term matches the filter." : "The glossary is empty." }));
+  $("g-count").textContent = `${terms.filter((t) => t.trim()).length} terms`;
+}
+function setTerms(text) { terms = text.split("\n").map((t) => t.trim()).filter(Boolean); $("g-filter").value = ""; renderTerms(); }
+async function openGlossary(video) {
+  gVideo = video; $("g-title").textContent = video; $("g-error").textContent = "";
+  terms = []; $("g-terms").replaceChildren(el("div", { className: "spinner", textContent: "Reading the slides and building the glossary… (a few seconds)" }));
+  $("glossary").showModal();
+  try { setTerms((await api("/api/glossary?video=" + encodeURIComponent(video))).text); }
+  catch (e) { $("g-terms").replaceChildren(); $("g-error").textContent = e.message; }
+}
+function addTerm() {
+  const v = $("g-new").value.trim();
+  if (!v) return;
+  terms.unshift(v); $("g-new").value = ""; $("g-filter").value = ""; renderTerms(); $("g-terms").scrollTop = 0;
+}
+$("g-add").addEventListener("click", addTerm);
+$("g-new").addEventListener("keydown", (e) => { if (e.key === "Enter") addTerm(); });
+$("g-filter").addEventListener("input", renderTerms);
+$("g-cancel").addEventListener("click", () => $("glossary").close());
+$("g-regen").addEventListener("click", async () => {
+  if (!confirm("Replace the list with a freshly generated one? Your edits are lost.")) return;
+  $("g-error").textContent = ""; $("g-terms").replaceChildren(el("div", { className: "spinner", textContent: "Building the glossary…" }));
+  try { setTerms((await api("/api/glossary/generate", { video: gVideo })).text); } catch (e) { $("g-error").textContent = e.message; renderTerms(); }
+});
+$("g-save").addEventListener("click", async () => {
+  try { await api("/api/glossary/save", { video: gVideo, text: terms.join("\n") }); $("glossary").close(); poll(); } catch (e) { $("g-error").textContent = e.message; }
+});
+</script>
+</body>
+</html>

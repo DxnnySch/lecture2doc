@@ -5,8 +5,9 @@ import pytest
 from docx import Document
 
 from lecture2doc import cli as lecture2doc
+from lecture2doc import pipeline
 from lecture2doc.api import RateLimiter
-from helpers import animation_state, make_pdf, make_pptx, make_video, make_wav
+from helpers import animation_state, make_pdf, make_video, make_wav
 from lecture2doc.slides import render_pdf
 
 
@@ -20,18 +21,17 @@ def fake_stt(texts):
 
 def setup(tmp_path, monkeypatch):
     monkeypatch.setenv("SCADS_API_KEY", "dummy")
-    pdf = make_pdf(tmp_path / "s.pdf", 3)
-    pptx = make_pptx(tmp_path / "s.pptx", [("Alpha", "a", False), ("Beta", "b", False), ("Gamma", "c", False)])
+    pdf = make_pdf(tmp_path / "s.pdf", 3, titles=["Alpha", "Beta", "Gamma"])
     images, _ = render_pdf(pdf)
     video = make_video(images, [0] * 4 + [1] * 4 + [0] * 4, tmp_path / "lec.mp4")
-    monkeypatch.setattr(lecture2doc, "transcribe_clips", fake_stt(["hello", "world", "again"]))
-    return video, pdf, pptx
+    monkeypatch.setattr(pipeline, "transcribe_clips", fake_stt(["hello", "world", "again"]))
+    return video, pdf
 
 
 def test_end_to_end_no_cleanup(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
     out = tmp_path / "out" / "lec.docx"
-    assert lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(out), "--workdir", str(tmp_path / "w"),
+    assert lecture2doc.main([str(video), str(pdf), "-o", str(out), "--workdir", str(tmp_path / "w"),
                              "--no-cleanup"]) == 0
     texts = [(p.style.name, p.text) for p in Document(out).paragraphs]
     # one page per stretch of the lecture, in lecture order: Alpha, Beta, Alpha again; Gamma was never shown
@@ -44,8 +44,8 @@ def test_end_to_end_no_cleanup(tmp_path, monkeypatch):
 
 
 def test_end_to_end_group_by_slide(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
-    out = run(video, pdf, pptx, tmp_path, "--no-cleanup", "--group-by-slide")
+    video, pdf = setup(tmp_path, monkeypatch)
+    out = run(video, pdf, tmp_path, "--no-cleanup", "--group-by-slide")
     texts = [(p.style.name, p.text) for p in Document(out).paragraphs]
     assert ("Heading 1", "Slide 1 – Alpha") in texts and ("Heading 1", "Slide 3 – Gamma") in texts
     assert ("Normal", "[00:00] hello") in texts
@@ -56,53 +56,53 @@ def test_end_to_end_group_by_slide(tmp_path, monkeypatch):
 
 
 def test_from_segments_skips_matching(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
     seg = tmp_path / "seg.json"
     seg.write_text(json.dumps({"spans": [{"slide": 3, "start": 0, "end": 12, "confidence": 1.0}]}))
-    monkeypatch.setattr(lecture2doc, "extract_frames", lambda *a, **k: (_ for _ in ()).throw(AssertionError("matched")))
+    monkeypatch.setattr(pipeline, "extract_frames", lambda *a, **k: (_ for _ in ()).throw(AssertionError("matched")))
     out = tmp_path / "o.docx"
-    lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(out), "--workdir", str(tmp_path / "w"),
+    lecture2doc.main([str(video), str(pdf), "-o", str(out), "--workdir", str(tmp_path / "w"),
                       "--no-cleanup", "--from-segments", str(seg)])
     texts = [p.text for p in Document(out).paragraphs]
     assert "hello" in texts  # one span, one clip
 
 
 def test_from_segments_rejects_unknown_slide(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
     seg = tmp_path / "seg.json"
     seg.write_text(json.dumps({"spans": [{"slide": 99, "start": 0, "end": 12, "confidence": 1.0}]}))
     with pytest.raises(SystemExit, match="99"):
-        lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(tmp_path / "o.docx"),
+        lecture2doc.main([str(video), str(pdf), "-o", str(tmp_path / "o.docx"),
                           "--workdir", str(tmp_path / "w"), "--no-cleanup", "--from-segments", str(seg)])
 
 
-def run(video, pdf, pptx, tmp_path, *extra, out=None):
+def run(video, pdf, tmp_path, *extra, out=None):
     out = out or tmp_path / "o.docx"
-    rc = lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(out), "--workdir", str(tmp_path / "w"), *extra])
+    rc = lecture2doc.main([str(video), str(pdf), "-o", str(out), "--workdir", str(tmp_path / "w"), *extra])
     assert rc == 0
     return out
 
 
 def test_missing_video_fails_fast(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
     with pytest.raises(SystemExit, match="video not found"):
-        run(tmp_path / "nope.mp4", pdf, pptx, tmp_path, "--no-cleanup")
+        run(tmp_path / "nope.mp4", pdf, tmp_path, "--no-cleanup")
 
 
 def test_missing_pdf_fails_fast(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
     with pytest.raises(SystemExit, match="PDF not found"):
-        run(video, tmp_path / "nope.pdf", pptx, tmp_path, "--no-cleanup")
+        run(video, tmp_path / "nope.pdf", tmp_path, "--no-cleanup")
 
 
 def test_missing_segments_file_fails_fast(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
     with pytest.raises(SystemExit, match="segments"):
-        run(video, pdf, pptx, tmp_path, "--no-cleanup", "--from-segments", str(tmp_path / "nope.json"))
+        run(video, pdf, tmp_path, "--no-cleanup", "--from-segments", str(tmp_path / "nope.json"))
 
 
 def test_from_segments_unsorted_matches_sorted(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
     spans = [{"slide": 1, "start": 0, "end": 4, "confidence": 1.0},
              {"slide": 2, "start": 4, "end": 8, "confidence": 1.0},
              {"slide": 3, "start": 8, "end": 12, "confidence": 1.0}]
@@ -110,7 +110,7 @@ def test_from_segments_unsorted_matches_sorted(tmp_path, monkeypatch):
     for name, order in (("sorted", spans), ("unsorted", spans[::-1])):
         seg = tmp_path / f"{name}.json"
         seg.write_text(json.dumps({"spans": order}))
-        out = run(video, pdf, pptx, tmp_path, "--no-cleanup", "--from-segments", str(seg),
+        out = run(video, pdf, tmp_path, "--no-cleanup", "--from-segments", str(seg),
                   out=tmp_path / f"{name}.docx")
         results.append([(p.style.name, p.text) for p in Document(out).paragraphs])
     assert results[0] == results[1]
@@ -127,16 +127,16 @@ def test_from_segments_unsorted_matches_sorted(tmp_path, monkeypatch):
     (json.dumps({"spans": [{"slide": 1, "start": 5, "end": 2}]}), "end"),
 ])
 def test_from_segments_malformed(tmp_path, monkeypatch, content, message):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
     seg = tmp_path / "seg.json"
     seg.write_text(content)
     with pytest.raises(SystemExit, match=message):
-        run(video, pdf, pptx, tmp_path, "--no-cleanup", "--from-segments", str(seg))
+        run(video, pdf, tmp_path, "--no-cleanup", "--from-segments", str(seg))
 
 
 def test_summary_per_slide(tmp_path, monkeypatch, capsys):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
-    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    video, pdf = setup(tmp_path, monkeypatch)
+    run(video, pdf, tmp_path, "--no-cleanup")
     out = capsys.readouterr().out
     assert "slide  1:" in out and "slide  2:" in out
     assert "slide  3:" not in out
@@ -145,48 +145,48 @@ def test_summary_per_slide(tmp_path, monkeypatch, capsys):
 
 
 def test_summary_for_from_segments(tmp_path, monkeypatch, capsys):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
     seg = tmp_path / "seg.json"
     seg.write_text(json.dumps({"spans": [{"slide": 3, "start": 0, "end": 12, "confidence": 1.0}]}))
-    run(video, pdf, pptx, tmp_path, "--no-cleanup", "--from-segments", str(seg))
+    run(video, pdf, tmp_path, "--no-cleanup", "--from-segments", str(seg))
     out = capsys.readouterr().out
     assert "slide  3:  12s matched" in out
     assert "slides never shown: [1, 2]" in out
 
 
 def test_transcribe_runtime_error_exits(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
 
     def boom(*a, **k):
         raise RuntimeError("no audio stream")
 
-    monkeypatch.setattr(lecture2doc, "transcribe_clips", boom)
+    monkeypatch.setattr(pipeline, "transcribe_clips", boom)
     with pytest.raises(SystemExit, match="no audio stream"):
-        run(video, pdf, pptx, tmp_path, "--no-cleanup")
+        run(video, pdf, tmp_path, "--no-cleanup")
 
 
 def test_cleanup_wiring(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
     monkeypatch.setenv("SCADS_LLM_MODEL", "llm-x")
     monkeypatch.setenv("SCADS_GLOSSARY_MODEL", "glos-y")
     monkeypatch.setenv("SCADS_REQUESTS_PER_MINUTE", "7")
     dummy = object()
     calls = {}
-    monkeypatch.setattr(lecture2doc, "make_client", lambda cfg: dummy)
+    monkeypatch.setattr(pipeline, "make_client", lambda cfg: dummy)
 
     def fake_glossary(client, model, slides, cache, limiter=None):
         calls["glossary"] = (client, model)
         calls["glossary_limiter"] = limiter
         return "GLOSS"
 
-    def fake_cleanup(client, model, glossary, outline, slides, spans, raws, cache, limiter=None):
+    def fake_cleanup(client, model, glossary, outline, slides, spans, raws, cache, limiter=None, on_progress=None):
         calls["cleanup"] = (client, model, glossary)
         calls["cleanup_limiter"] = limiter
         return [f"CLEAN<{r}>" for r in raws]
 
-    monkeypatch.setattr(lecture2doc, "build_glossary", fake_glossary)
-    monkeypatch.setattr(lecture2doc, "cleanup_spans", fake_cleanup)
-    out = run(video, pdf, pptx, tmp_path)
+    monkeypatch.setattr(pipeline, "build_glossary", fake_glossary)
+    monkeypatch.setattr(pipeline, "cleanup_spans", fake_cleanup)
+    out = run(video, pdf, tmp_path)
     assert calls["glossary"] == (dummy, "glos-y")
     assert calls["cleanup"] == (dummy, "llm-x", "GLOSS")
     assert isinstance(calls["cleanup_limiter"], RateLimiter) and calls["cleanup_limiter"].max_calls == 7
@@ -199,55 +199,55 @@ def test_cleanup_wiring(tmp_path, monkeypatch):
 
 
 def test_keep_raw(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
-    out = run(video, pdf, pptx, tmp_path, "--no-cleanup", "--keep-raw")
+    video, pdf = setup(tmp_path, monkeypatch)
+    out = run(video, pdf, tmp_path, "--no-cleanup", "--keep-raw")
     assert "Raw: world" in [p.text for p in Document(out).paragraphs]
 
 
 def test_thumbnails_toggle(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
-    with_thumbs = run(video, pdf, pptx, tmp_path, "--no-cleanup", out=tmp_path / "a.docx")
-    without = run(video, pdf, pptx, tmp_path, "--no-cleanup", "--no-thumbnails", out=tmp_path / "b.docx")
+    video, pdf = setup(tmp_path, monkeypatch)
+    with_thumbs = run(video, pdf, tmp_path, "--no-cleanup", out=tmp_path / "a.docx")
+    without = run(video, pdf, tmp_path, "--no-cleanup", "--no-thumbnails", out=tmp_path / "b.docx")
     assert len(Document(with_thumbs).inline_shapes) >= 1
     assert len(Document(without).inline_shapes) == 0
 
 
 def test_probe_failure_falls_back_to_16_9_with_warning(tmp_path, monkeypatch, caplog):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
 
     def bad_probe(v):
         raise RuntimeError("ffprobe could not read the video size")
 
-    monkeypatch.setattr(lecture2doc, "probe_aspect", bad_probe)
-    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    monkeypatch.setattr(pipeline, "probe_aspect", bad_probe)
+    run(video, pdf, tmp_path, "--no-cleanup")
     assert "assuming 16:9" in caplog.text
 
 
 def test_frame_extraction_error_exits(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
 
     def boom(*a, **k):
         raise RuntimeError("no video frames extracted from lec.mp4")
 
-    monkeypatch.setattr(lecture2doc, "extract_frames", boom)
+    monkeypatch.setattr(pipeline, "extract_frames", boom)
     with pytest.raises(SystemExit, match="no video frames extracted"):
-        run(video, pdf, pptx, tmp_path, "--no-cleanup")
+        run(video, pdf, tmp_path, "--no-cleanup")
 
 
 def test_transcribe_api_error_exits_without_traceback_or_key(tmp_path, monkeypatch):
     import httpx2
     import openai
 
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
 
     def denied(*a, **k):
         raise openai.AuthenticationError(
             "invalid credentials",
             response=httpx2.Response(401, request=httpx2.Request("POST", "http://x")), body=None)
 
-    monkeypatch.setattr(lecture2doc, "transcribe_clips", denied)
+    monkeypatch.setattr(pipeline, "transcribe_clips", denied)
     with pytest.raises(SystemExit) as exc_info:
-        run(video, pdf, pptx, tmp_path, "--no-cleanup")
+        run(video, pdf, tmp_path, "--no-cleanup")
     msg = str(exc_info.value)
     assert "speech-to-text failed" in msg
     assert "invalid credentials" in msg
@@ -263,17 +263,17 @@ def non_subtitle(path):
 
 
 def test_normal_run_adds_time_subtitles(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
-    out = run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    video, pdf = setup(tmp_path, monkeypatch)
+    out = run(video, pdf, tmp_path, "--no-cleanup")
     lines = subtitle_lines(out)
     assert len(lines) == 3  # one per page: slide 1, slide 2, slide 1 again; slide 3 never shown
     assert all(re.fullmatch(r"\d\d:\d\d – \d\d:\d\d", line) for line in lines)
-    grouped = subtitle_lines(run(video, pdf, pptx, tmp_path, "--no-cleanup", "--group-by-slide",
+    grouped = subtitle_lines(run(video, pdf, tmp_path, "--no-cleanup", "--group-by-slide",
                                  out=tmp_path / "grouped.docx"))
     assert len(grouped) == 2  # slide 1 (two visits) and slide 2
     assert re.fullmatch(r"\d\d:\d\d – \d\d:\d\d · \d\d:\d\d – \d\d:\d\d", grouped[0])
     assert re.fullmatch(r"\d\d:\d\d – \d\d:\d\d", grouped[1])
-    assert subtitle_lines(run(video, pdf, pptx, tmp_path, "--no-cleanup", "--no-timestamps",
+    assert subtitle_lines(run(video, pdf, tmp_path, "--no-cleanup", "--no-timestamps",
                               out=tmp_path / "plain.docx")) == []
 
 
@@ -282,17 +282,17 @@ def forbid_heavy_work(monkeypatch):
         raise AssertionError("heavy work during --rebuild")
     for name in ("transcribe_clips", "detect_silences", "extract_frames", "match_frames", "probe_aspect", "load_config",
                  "check_ffmpeg", "make_client", "build_glossary", "cleanup_spans"):
-        monkeypatch.setattr(lecture2doc, name, boom)
+        monkeypatch.setattr(pipeline, name, boom)
 
 
 def test_rebuild_adds_subtitles_offline_without_video_or_key(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
-    old = run(video, pdf, pptx, tmp_path, "--no-cleanup", "--no-timestamps", out=tmp_path / "old.docx")
+    video, pdf = setup(tmp_path, monkeypatch)
+    old = run(video, pdf, tmp_path, "--no-cleanup", "--no-timestamps", out=tmp_path / "old.docx")
     assert subtitle_lines(old) == []
     video.unlink()  # the video is not needed any more
     forbid_heavy_work(monkeypatch)
     new = tmp_path / "new.docx"
-    rc = lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(new), "--workdir", str(tmp_path / "w"),
+    rc = lecture2doc.main([str(video), str(pdf), "-o", str(new), "--workdir", str(tmp_path / "w"),
                            "--rebuild"])
     assert rc == 0
     assert len(subtitle_lines(new)) == 3
@@ -300,8 +300,8 @@ def test_rebuild_adds_subtitles_offline_without_video_or_key(tmp_path, monkeypat
 
 
 def test_rebuild_uses_cleaned_text_and_keeps_segments_file_untouched(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
-    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    video, pdf = setup(tmp_path, monkeypatch)
+    run(video, pdf, tmp_path, "--no-cleanup")
     segfile = tmp_path / "w" / "segments.json"
     data = json.loads(segfile.read_text(encoding="utf-8"))
     data["spans"][1]["clean"] = "World, corrected."
@@ -309,7 +309,7 @@ def test_rebuild_uses_cleaned_text_and_keeps_segments_file_untouched(tmp_path, m
     before = segfile.read_text(encoding="utf-8")
     forbid_heavy_work(monkeypatch)
     out = tmp_path / "r.docx"
-    lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(out), "--workdir", str(tmp_path / "w"),
+    lecture2doc.main([str(video), str(pdf), "-o", str(out), "--workdir", str(tmp_path / "w"),
                       "--rebuild", "--keep-raw"])
     texts = [p.text for p in Document(out).paragraphs]
     assert "World, corrected." in texts and "Raw: world" in texts
@@ -317,13 +317,13 @@ def test_rebuild_uses_cleaned_text_and_keeps_segments_file_untouched(tmp_path, m
 
 
 def test_rebuild_from_explicit_segments_file(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
     seg = tmp_path / "elsewhere.json"
     seg.write_text(json.dumps({"spans": [{"slide": 2, "start": 5, "end": 65, "raw": "r", "clean": "Cleaned."}]}),
                    encoding="utf-8")
     forbid_heavy_work(monkeypatch)
     out = tmp_path / "e.docx"
-    lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(out), "--workdir", str(tmp_path / "w2"),
+    lecture2doc.main([str(video), str(pdf), "-o", str(out), "--workdir", str(tmp_path / "w2"),
                       "--rebuild", "--from-segments", str(seg)])
     assert subtitle_lines(out) == ["00:05 – 01:05"]
 
@@ -334,29 +334,29 @@ def test_rebuild_from_explicit_segments_file(tmp_path, monkeypatch):
     ({"spans": [{"slide": 1, "start": 0, "end": 5, "clean": 3, "raw": "r"}]}, "'clean'"),
 ])
 def test_rebuild_requires_a_complete_segments_file(tmp_path, monkeypatch, content, message):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
     if content is not None:
         (tmp_path / "w").mkdir()
         (tmp_path / "w" / "segments.json").write_text(json.dumps(content), encoding="utf-8")
     forbid_heavy_work(monkeypatch)
     with pytest.raises(SystemExit, match=message):
-        lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(tmp_path / "x.docx"),
+        lecture2doc.main([str(video), str(pdf), "-o", str(tmp_path / "x.docx"),
                           "--workdir", str(tmp_path / "w"), "--rebuild"])
 
 
 def test_page_breaks_by_default_and_no_page_breaks_option(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
 
     def flags(path):
         return [p.paragraph_format.page_break_before for p in Document(path).paragraphs if p.style.name == "Heading 1"]
 
-    default = run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    default = run(video, pdf, tmp_path, "--no-cleanup")
     assert flags(default) == [None, True, True]
-    compact = run(video, pdf, pptx, tmp_path, "--no-cleanup", "--no-page-breaks", out=tmp_path / "compact.docx")
+    compact = run(video, pdf, tmp_path, "--no-cleanup", "--no-page-breaks", out=tmp_path / "compact.docx")
     assert flags(compact) == [None, None, None]
     forbid_heavy_work(monkeypatch)  # --rebuild honours the option too, offline
     rebuilt = tmp_path / "rebuilt.docx"
-    lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(rebuilt), "--workdir", str(tmp_path / "w"),
+    lecture2doc.main([str(video), str(pdf), "-o", str(rebuilt), "--workdir", str(tmp_path / "w"),
                       "--rebuild", "--no-page-breaks"])
     assert flags(rebuilt) == [None, None, None]
 
@@ -364,20 +364,19 @@ def test_page_breaks_by_default_and_no_page_breaks_option(tmp_path, monkeypatch)
 def silent_gap_setup(tmp_path, monkeypatch):
     """The slides change at 4 s and 8 s, in the middle of the silent gaps 3-5 s and 7-9 s of the recording."""
     monkeypatch.setenv("SCADS_API_KEY", "dummy")
-    pdf = make_pdf(tmp_path / "s.pdf", 3)
-    pptx = make_pptx(tmp_path / "s.pptx", [("Alpha", "a", False), ("Beta", "b", False), ("Gamma", "c", False)])
+    pdf = make_pdf(tmp_path / "s.pdf", 3, titles=["Alpha", "Beta", "Gamma"])
     images, _ = render_pdf(pdf)
     wav = make_wav(tmp_path / "a.wav", [("tone", 3.0), ("silence", 2.0), ("tone", 2.0), ("silence", 2.0),
                                         ("tone", 3.0)])
     video = make_video(images, [0] * 4 + [1] * 4 + [0] * 4, tmp_path / "gaps.mp4", audio=wav)
     stt = fake_stt(["hello", "world", "again"])
-    monkeypatch.setattr(lecture2doc, "transcribe_clips", stt)
-    return video, pdf, pptx, stt
+    monkeypatch.setattr(pipeline, "transcribe_clips", stt)
+    return video, pdf, stt
 
 
 def test_audio_is_cut_in_the_silent_gap_at_every_slide_change(tmp_path, monkeypatch, capsys):
-    video, pdf, pptx, stt = silent_gap_setup(tmp_path, monkeypatch)
-    out = run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    video, pdf, stt = silent_gap_setup(tmp_path, monkeypatch)
+    out = run(video, pdf, tmp_path, "--no-cleanup")
     # cut in the middle of the gaps 3-5 s and 7-9 s (at 4 s and 8 s); each clip keeps 0.25 s of the silence
     assert [t for c in stt.clips for t in (c.start, c.end)] == pytest.approx([0.0, 3.25, 4.75, 7.25, 8.75, 12.0], abs=0.1)
     assert [round(c.speech) for c in stt.clips] == [3, 2, 3]
@@ -391,8 +390,8 @@ def test_audio_is_cut_in_the_silent_gap_at_every_slide_change(tmp_path, monkeypa
 
 
 def test_without_a_silent_gap_the_cut_is_exactly_at_the_slide_change(tmp_path, monkeypatch, capsys):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)  # a continuous tone: nothing to cut in
-    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    video, pdf = setup(tmp_path, monkeypatch)  # a continuous tone: nothing to cut in
+    run(video, pdf, tmp_path, "--no-cleanup")
     out = capsys.readouterr().out
     assert "2 slide changes without a silent gap" in out and "cut in the silent gap" not in out
     seg = json.loads((tmp_path / "w" / "segments.json").read_text(encoding="utf-8"))["spans"]
@@ -401,13 +400,13 @@ def test_without_a_silent_gap_the_cut_is_exactly_at_the_slide_change(tmp_path, m
 
 
 def test_silence_detection_failure_degrades_to_cutting_at_the_slide_changes(tmp_path, monkeypatch, caplog):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
 
     def broken(media):
         raise RuntimeError("silence detection failed")
 
-    monkeypatch.setattr(lecture2doc, "detect_silences", broken)
-    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    monkeypatch.setattr(pipeline, "detect_silences", broken)
+    run(video, pdf, tmp_path, "--no-cleanup")
     assert "cutting exactly at the slide changes" in caplog.text
 
 
@@ -415,12 +414,11 @@ def numbered_setup(tmp_path, monkeypatch):
     """A numbered deck; slides 2 and 4 are only shown half built (just the footer with the page number)."""
     monkeypatch.setenv("SCADS_API_KEY", "dummy")
     pdf = make_pdf(tmp_path / "n.pdf", 4, numbers=True)
-    pptx = make_pptx(tmp_path / "n.pptx", [(f"Topic {i}", "x", False) for i in range(1, 5)])
     images, _ = render_pdf(pdf, width=960)
     order = [0] * 4 + [animation_state(images[1])] * 4 + [2] * 4 + [animation_state(images[3])] * 4
     video = make_video(images, order, tmp_path / "num.mp4", size=(960, 540))
-    monkeypatch.setattr(lecture2doc, "transcribe_clips", fake_stt(["one", "two", "three", "four"]))
-    return video, pdf, pptx
+    monkeypatch.setattr(pipeline, "transcribe_clips", fake_stt(["one", "two", "three", "four"]))
+    return video, pdf
 
 
 def segment_slides(tmp_path):
@@ -429,81 +427,160 @@ def segment_slides(tmp_path):
 
 
 def test_slide_number_in_the_corner_identifies_half_built_slides(tmp_path, monkeypatch, capsys):
-    video, pdf, pptx = numbered_setup(tmp_path, monkeypatch)
-    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    video, pdf = numbered_setup(tmp_path, monkeypatch)
+    run(video, pdf, tmp_path, "--no-cleanup")
     assert segment_slides(tmp_path) == [1, 2, 3, 4]
     out = capsys.readouterr().out
     assert "slide number readable in" in out and "it changed the slide of 8 frames" in out
 
 
 def test_no_slide_numbers_option_uses_the_picture_alone(tmp_path, monkeypatch, capsys):
-    video, pdf, pptx = numbered_setup(tmp_path, monkeypatch)
-    run(video, pdf, pptx, tmp_path, "--no-cleanup", "--no-slide-numbers")
+    video, pdf = numbered_setup(tmp_path, monkeypatch)
+    run(video, pdf, tmp_path, "--no-cleanup", "--no-slide-numbers")
     assert segment_slides(tmp_path) != [1, 2, 3, 4]  # the half-built slides are lost without the number
     assert "slide number readable" not in capsys.readouterr().out
 
 
 def test_a_deck_without_page_numbers_still_works_and_says_so(tmp_path, monkeypatch, capsys):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)  # the plain deck has no numbers
-    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    video, pdf = setup(tmp_path, monkeypatch)  # the plain deck has no numbers
+    run(video, pdf, tmp_path, "--no-cleanup")
     assert segment_slides(tmp_path) == [1, 2, 1]
     assert "no page numbers found in the PDF" in capsys.readouterr().out
 
 
 def test_unreadable_numbers_fall_back_to_the_picture_with_a_warning(tmp_path, monkeypatch, caplog):
-    video, pdf, pptx = numbered_setup(tmp_path, monkeypatch)
+    video, pdf = numbered_setup(tmp_path, monkeypatch)
 
     def broken(*a, **k):
         raise RuntimeError("strip pass failed")
 
-    monkeypatch.setattr(lecture2doc, "extract_strips", broken)
-    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    monkeypatch.setattr(pipeline, "extract_strips", broken)
+    run(video, pdf, tmp_path, "--no-cleanup")
     assert "cannot read the slide numbers" in caplog.text
     assert segment_slides(tmp_path)  # it still produced a document
 
 
 def test_group_by_slide_option_also_applies_when_rebuilding(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
-    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    video, pdf = setup(tmp_path, monkeypatch)
+    run(video, pdf, tmp_path, "--no-cleanup")
     forbid_heavy_work(monkeypatch)
     out = tmp_path / "grouped.docx"
-    lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(out), "--workdir", str(tmp_path / "w"),
+    lecture2doc.main([str(video), str(pdf), "-o", str(out), "--workdir", str(tmp_path / "w"),
                       "--rebuild", "--group-by-slide"])
     headings = [p.text for p in Document(out).paragraphs if p.style.name == "Heading 1"]
     assert headings == ["Slide 1 – Alpha", "Slide 2 – Beta", "Slide 3 – Gamma"]  # every slide once, in slide order
     default = tmp_path / "default.docx"
-    lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(default), "--workdir", str(tmp_path / "w"),
+    lecture2doc.main([str(video), str(pdf), "-o", str(default), "--workdir", str(tmp_path / "w"),
                       "--rebuild"])
     assert [p.text for p in Document(default).paragraphs if p.style.name == "Heading 1"] == [
         "Slide 1 – Alpha", "Slide 2 – Beta", "Slide 1 – Alpha"]
 
 
 def test_a_document_that_is_open_in_word_is_a_clear_error_and_nothing_is_lost(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    video, pdf = setup(tmp_path, monkeypatch)
 
     def locked(*args, **kwargs):
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(lecture2doc, "write_docx", locked)
-    with pytest.raises(SystemExit, match="open in Word.*--rebuild"):
-        run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    monkeypatch.setattr(pipeline, "write_docx", locked)
+    with pytest.raises(SystemExit, match="open in Word"):
+        run(video, pdf, tmp_path, "--no-cleanup")
     assert (tmp_path / "w" / "segments.json").exists()  # the results were saved before the document was written
     monkeypatch.undo()
     monkeypatch.setenv("SCADS_API_KEY", "dummy")
     out = tmp_path / "later.docx"  # --rebuild then finishes the job offline
     forbid_heavy_work(monkeypatch)
-    lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(out), "--workdir", str(tmp_path / "w"), "--rebuild"])
+    lecture2doc.main([str(video), str(pdf), "-o", str(out), "--workdir", str(tmp_path / "w"), "--rebuild"])
     assert out.exists()
 
 
 def test_rebuild_into_a_locked_document_is_a_clear_error_too(tmp_path, monkeypatch):
-    video, pdf, pptx = setup(tmp_path, monkeypatch)
-    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    video, pdf = setup(tmp_path, monkeypatch)
+    run(video, pdf, tmp_path, "--no-cleanup")
 
     def locked(*args, **kwargs):
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(lecture2doc, "write_docx", locked)
+    monkeypatch.setattr(pipeline, "write_docx", locked)
     with pytest.raises(SystemExit, match="open in Word"):
-        lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(tmp_path / "x.docx"),
+        lecture2doc.main([str(video), str(pdf), "-o", str(tmp_path / "x.docx"),
                           "--workdir", str(tmp_path / "w"), "--rebuild"])
+
+
+def test_the_first_run_saves_the_glossary_and_later_runs_use_the_edited_one(tmp_path, monkeypatch):
+    video, pdf = setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(pipeline, "make_client", lambda cfg: object())
+    built, used = [], []
+    monkeypatch.setattr(pipeline, "build_glossary", lambda *a, **k: built.append(1) or "alpha\nbeta")
+
+    def fake_cleanup(client, model, glossary, outline, slides, spans, raws, cache, limiter=None, on_progress=None):
+        used.append(glossary)
+        return raws
+
+    monkeypatch.setattr(pipeline, "cleanup_spans", fake_cleanup)
+    run(video, pdf, tmp_path)
+    assert (tmp_path / "w" / "glossary.txt").read_text(encoding="utf-8") == "alpha\nbeta\n"
+    pipeline.save_glossary(tmp_path / "w", "alpha\n\n  gamma  \n")  # the user edits it
+    run(video, pdf, tmp_path)
+    assert built == [1] and used == ["alpha\nbeta", "alpha\ngamma\n"]
+
+
+class Recorder(pipeline.Reporter):
+    def __init__(self):
+        super().__init__()
+        self.events = []
+
+    def emit(self, key, label, overall, fraction, detail):
+        self.events.append((key, overall, fraction))
+
+
+def test_progress_runs_through_the_stages_from_0_to_1_and_never_goes_back(tmp_path, monkeypatch):
+    video, pdf = setup(tmp_path, monkeypatch)
+    rec = Recorder()
+    job = lecture2doc.job_from_args(lecture2doc.parse_args(
+        [str(video), str(pdf), "-o", str(tmp_path / "o.docx"), "--workdir", str(tmp_path / "w"), "--no-cleanup"]))
+    pipeline.run(job, rec)
+    overall = [o for _, o, _ in rec.events]
+    assert overall == sorted(overall) and overall[-1] == 1.0 and overall[0] < 0.1
+    stages = [k for k, _, _ in rec.events]
+    assert [k for i, k in enumerate(stages) if i == 0 or stages[i - 1] != k] == [
+        "slides", "matching", "cutting", "transcribing", "writing", "done"]
+
+
+def test_a_cancelled_run_stops_with_Cancelled(tmp_path, monkeypatch):
+    video, pdf = setup(tmp_path, monkeypatch)
+
+    class Stop(Recorder):
+        def check(self):
+            if self.events and self.events[-1][0] == "cutting":
+                raise pipeline.Cancelled()
+
+    job = lecture2doc.job_from_args(lecture2doc.parse_args(
+        [str(video), str(pdf), "-o", str(tmp_path / "o.docx"), "--workdir", str(tmp_path / "w"), "--no-cleanup"]))
+    with pytest.raises(pipeline.Cancelled):
+        pipeline.run(job, Stop())
+    assert not (tmp_path / "o.docx").exists()
+
+
+def test_a_second_run_reuses_the_slide_matching(tmp_path, monkeypatch):
+    video, pdf = setup(tmp_path, monkeypatch)
+    run(video, pdf, tmp_path, "--no-cleanup")
+    assert (tmp_path / "w" / "matching.json").is_file()
+    first = (tmp_path / "w" / "segments.json").read_text(encoding="utf-8")
+
+    def boom(*a, **k):
+        raise AssertionError("matched again")
+
+    monkeypatch.setattr(pipeline, "extract_frames", boom)
+    run(video, pdf, tmp_path, "--no-cleanup")
+    assert (tmp_path / "w" / "segments.json").read_text(encoding="utf-8") == first
+
+
+def test_changed_matching_settings_match_again(tmp_path, monkeypatch):
+    video, pdf = setup(tmp_path, monkeypatch)
+    run(video, pdf, tmp_path, "--no-cleanup")
+    calls = []
+    real = pipeline.extract_frames
+    monkeypatch.setattr(pipeline, "extract_frames", lambda *a, **k: calls.append(1) or real(*a, **k))
+    run(video, pdf, tmp_path, "--no-cleanup", "--threshold", "0.7")
+    assert calls == [1]
