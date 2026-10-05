@@ -1,30 +1,103 @@
 # lecture2doc
 
-Turns a lecture video plus its slides (PDF export and PPTX) into a Word document with one section per slide: the slide title, a thumbnail, and what the lecturer said while that slide was on screen. Speech-to-text and transcript cleanup run through the ScaDS.AI OpenAI-compatible API.
+Turn a recorded lecture into a Word document you can skim and search.
 
-How it works: video frames are sampled and matched against the PDF pages to find which slide is shown when (4:3 slides shown pillarboxed in a 16:9 recording are handled, and the page number in the corner of the video identifies half-built animated slides); the audio is cut at every slide change and the audio of each stretch on one slide is transcribed on its own, so every word belongs to exactly one slide; an LLM then fixes recognition errors using a glossary built from the slide text (with guardrails that fall back to the raw text if the output deviates too much).
+You give it the **lecture video** and the **slides** (as PDF and PowerPoint). You get a `.docx` with one page per stretch of the lecture: the slide title, a thumbnail of the slide, the time it was on screen, and a cleaned-up transcript of what the lecturer said while it was shown.
 
-## Setup
+```
+lecture.mp4 + slides.pdf + slides.pptx   ->   lecture.docx
+```
 
-1. Python 3.11+ and `ffmpeg` on `PATH`.
-2. Create the environment and install dependencies:
-   ```bash
-   python -m venv .venv
-   .venv/Scripts/pip install -r requirements.txt     # Linux/macOS: .venv/bin/pip
-   ```
-   `openai>=3` is required.
-3. Copy `.env.example` to `.env` and fill in your key (`.env` is git-ignored; never commit it). Variables:
-   - `SCADS_API_KEY` (required) - your ScaDS.AI API key
-   - `SCADS_BASE_URL` - default `https://llm.scads.ai/v1`
-   - `SCADS_STT_MODEL` - speech-to-text model alias, default `alias-stt`
-   - `SCADS_LLM_MODEL` - model for transcript cleanup, default `alias-huge-no-thinking`
-   - `SCADS_GLOSSARY_MODEL` - optional separate model for the glossary step (e.g. a reasoning model); defaults to `SCADS_LLM_MODEL`
-   - `SCADS_REQUESTS_PER_MINUTE` - cap for LLM requests per minute, default `25` (the gateway allowed 30 per key and model when this was written); lower it if your key has a smaller quota
+## What you need
 
-## Usage
+| Requirement | Notes |
+| --- | --- |
+| Python 3.11 or newer | check with `python --version` |
+| ffmpeg | must be on your `PATH`, check with `ffmpeg -version` (see below) |
+| A ScaDS.AI API key | used for speech-to-text and transcript cleanup |
+| Your lecture files | the video (`.mp4`), the slides exported as PDF, and the original `.pptx` |
+
+Installing ffmpeg: Windows `winget install ffmpeg`, macOS `brew install ffmpeg`, Debian/Ubuntu `sudo apt install ffmpeg`.
+
+## Quick start
+
+**1. Get the code and create a virtual environment**
 
 ```bash
-.venv/Scripts/python lecture2doc.py VIDEO.mp4 SLIDES.pdf SLIDES.pptx -o lecture.docx
+git clone <this repository's URL>
+cd lecture_video-to-text
+python -m venv .venv
+```
+
+**2. Activate it and install the dependencies**
+
+| Windows (PowerShell) | macOS / Linux |
+| --- | --- |
+| `.venv\Scripts\Activate.ps1` | `source .venv/bin/activate` |
+
+```bash
+pip install -r requirements.txt
+```
+
+**3. Add your API key**
+
+Copy `.env.example` to `.env` (Windows: `copy .env.example .env`) and replace `sk-your-scads-ai-key` with your key. `.env` is git-ignored, so the key is never committed.
+
+**4. Run it**
+
+```bash
+python lecture2doc.py lecture.mp4 slides.pdf slides.pptx -o lecture.docx
+```
+
+That is all. A long lecture takes a while (transcription and cleanup call the API); everything is cached, so if a run is interrupted, running the same command again continues where it stopped.
+
+If you did not activate the environment, call its Python directly instead: `.venv/Scripts/python lecture2doc.py ...` (Windows) or `.venv/bin/python lecture2doc.py ...` (macOS/Linux).
+
+## How it works
+
+1. Video frames are sampled and compared with the PDF pages to find which slide is on screen when. Pillarboxed 4:3 slides in a 16:9 recording are handled, and the page number in the corner of the video identifies half-built animated slides.
+2. The audio is cut at every slide change, and each stretch on one slide is transcribed on its own, so every word belongs to exactly one slide.
+3. An LLM fixes recognition errors using a glossary built from the slide text. Guardrails fall back to the raw text if the output deviates too much.
+4. The Word document is written with real heading styles, so the navigation pane and Ctrl+F work.
+
+## Configuration
+
+Set these in `.env`:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SCADS_API_KEY` | (required) | your ScaDS.AI API key |
+| `SCADS_BASE_URL` | `https://llm.scads.ai/v1` | API endpoint |
+| `SCADS_STT_MODEL` | `alias-stt` | speech-to-text model |
+| `SCADS_LLM_MODEL` | `alias-huge-no-thinking` | model for transcript cleanup |
+| `SCADS_GLOSSARY_MODEL` | same as `SCADS_LLM_MODEL` | optional separate model for the glossary step (e.g. a reasoning model) |
+| `SCADS_REQUESTS_PER_MINUTE` | `25` | request cap; the gateway allowed 30 per key and model when this was written, lower it if your quota is smaller |
+
+The API client is the standard OpenAI one, so another OpenAI-compatible service may work by changing the base URL and model names. This is untested.
+
+## Running the tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+The tests need ffmpeg on your `PATH` but no API key (API calls are mocked).
+
+## Troubleshooting
+
+| Problem | Fix |
+| --- | --- |
+| `ffmpeg` not found | install it and make sure `ffmpeg -version` works in the same terminal |
+| Missing or invalid API key | check that `.env` is in the folder you run the command from and contains `SCADS_API_KEY=...` |
+| The `.docx` cannot be saved | it is open in Word; close it and run again with `--rebuild`, or pick another file with `-o` |
+| Wrong slide on some pages, or many unmatched seconds | tune `--threshold` (0.5-0.8) and `--smooth` (3-9), or correct `segments.json` (see below); reruns are fast because transcription is cached |
+| HTTP 429 (rate limit) | retried automatically; if it keeps happening, lower `SCADS_REQUESTS_PER_MINUTE` |
+
+## Usage in detail
+
+```bash
+python lecture2doc.py VIDEO.mp4 SLIDES.pdf SLIDES.pptx -o lecture.docx
 ```
 
 The PDF supplies the page images used for matching; the PPTX supplies slide titles. Hidden PPTX slides are skipped (they are not in the PDF). If the PPTX is unreadable or its slide count does not match the PDF, titles are taken from the PDF (the largest text in the upper part of each page, so footers are ignored) and a warning is printed.
@@ -60,7 +133,7 @@ A summary after matching lists seconds matched per slide, the unmatched percenta
 `segments.json` holds every span (`slide`, `start`, `end`, `confidence`, `audio_start`, `audio_end`, `raw`, `clean`). `start`/`end` are when the slide was on screen; `audio_start`/`audio_end` are where the audio was cut for its transcript. If a slide assignment is wrong, edit the `slide`/`start`/`end` values and regenerate with the corrected spans:
 
 ```bash
-.venv/Scripts/python lecture2doc.py VIDEO.mp4 SLIDES.pdf SLIDES.pptx --from-segments output/<stem>/segments.json
+python lecture2doc.py VIDEO.mp4 SLIDES.pdf SLIDES.pptx --from-segments output/<stem>/segments.json
 ```
 
 The audio is cut again at the edited times; only the clips whose cut times changed are transcribed again (and cleaned again by the LLM), everything else comes from the caches.
@@ -84,7 +157,7 @@ If the `.docx` is open in Word it cannot be overwritten: the tool then says so, 
 Layout options (`--no-timestamps`, `--no-page-breaks`, `--no-thumbnails`, `--keep-raw`) and the slide titles only affect the Word file, so you never need to transcribe again to change them. `--rebuild` regenerates the `.docx` from the saved `segments.json` (which holds the cleaned and raw text and the times) plus the PDF/PPTX, in seconds, without video, ffmpeg, API key or network:
 
 ```bash
-.venv/Scripts/python lecture2doc.py VIDEO.mp4 SLIDES.pdf SLIDES.pptx --rebuild
+python lecture2doc.py VIDEO.mp4 SLIDES.pdf SLIDES.pptx --rebuild
 ```
 
 It reads `<workdir>/segments.json` (or the file given with `--from-segments`), overwrites the `.docx` and never touches `segments.json` or the caches. The video path is only used to name the output. You can hand-edit `clean` text or slide/time spans in `segments.json` first.
@@ -95,3 +168,7 @@ It reads `<workdir>/segments.json` (or the file given with `--from-segments`), o
 - Slide matching relies on the video showing the slides; talking-head-only stretches are attached to the neighbouring slide.
 - LLM cleanup can occasionally misjudge a term; use `--keep-raw` to compare, or `--no-cleanup`.
 - The API can be slow; a full lecture's cleanup may take a while. The LLM requests are throttled to `SCADS_REQUESTS_PER_MINUTE`, and a rate-limit error (HTTP 429) is retried after the server's `Retry-After` time or, without one, after 15/30/60 seconds. Results are cached, so an interrupted or partly failed run only repeats the missing calls.
+
+## License
+
+[MIT](LICENSE)

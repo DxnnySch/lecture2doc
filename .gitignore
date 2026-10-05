@@ -1,7 +1,26 @@
+# Secrets - never commit your API key
 .env
+
+# Your lectures and generated results
 samples/
 output/
+*.docx
+*.mp4
+
+# Python
 .venv/
+venv/
 __pycache__/
+*.py[cod]
 .pytest_cache/
+*.egg-info/
+
+# Editor / tool folders
+.vscode/
+.idea/
+.claude/
 .superpowers/
+
+# OS files
+.DS_Store
+Thumbs.db
