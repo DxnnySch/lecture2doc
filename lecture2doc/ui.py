@@ -246,7 +246,7 @@ class App:
         return self._pdf_path(row["pdf"])
 
     def glossary(self, video: str, generate: bool = False) -> str:
-        """The glossary of the video's PDF: the saved one, or (first time / on request) a freshly built one."""
+        """The glossary of the PDF folder: the saved one, or (first time / on request) a freshly built one."""
         pdf = self._deck(video)
         with self.glossary_lock:  # two requests for the same deck must not build it twice
             saved = None if generate else pipeline.read_glossary(pdf)

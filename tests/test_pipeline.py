@@ -519,7 +519,7 @@ def test_the_first_run_saves_the_glossary_and_later_runs_use_the_edited_one(tmp_
 
     monkeypatch.setattr(pipeline, "cleanup_spans", fake_cleanup)
     run(video, pdf, tmp_path)
-    assert (tmp_path / ".lecture2doc" / "s.glossary.txt").read_text(encoding="utf-8") == "alpha\nbeta\n"
+    assert (tmp_path / ".lecture2doc" / "glossary.txt").read_text(encoding="utf-8") == "alpha\nbeta\n"
     pipeline.save_glossary(pdf, "alpha\n\n  gamma  \n")  # the user edits it
     run(video, pdf, tmp_path)
     assert built == [1] and used == ["alpha\nbeta", "alpha\ngamma\n"]
@@ -584,3 +584,17 @@ def test_changed_matching_settings_match_again(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline, "extract_frames", lambda *a, **k: calls.append(1) or real(*a, **k))
     run(video, pdf, tmp_path, "--no-cleanup", "--threshold", "0.7")
     assert calls == [1]
+
+
+def test_the_glossary_is_built_from_every_pdf_in_the_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCADS_API_KEY", "dummy")
+    make_pdf(tmp_path / "a.pdf", 2, titles=["Alpha one", "Alpha two"])
+    make_pdf(tmp_path / "b.pdf", 1, titles=["Beta one"])
+    (tmp_path / "broken.pdf").write_bytes(b"not a pdf")
+    seen = []
+    monkeypatch.setattr(pipeline, "make_client", lambda cfg: object())
+    monkeypatch.setattr(pipeline, "build_glossary", lambda client, model, slides, cache, limiter=None:
+                        seen.extend(f"{s.title}|{s.number}" for s in slides) or "term")
+    assert pipeline.make_glossary(tmp_path / "a.pdf") == "term"
+    assert seen == ["a: Alpha one|1", "a: Alpha two|2", "b: Beta one|1"]  # the broken file is skipped
+    assert pipeline.read_glossary(tmp_path / "b.pdf") == "term\n"  # the same glossary for every PDF of the folder

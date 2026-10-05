@@ -65,12 +65,14 @@ If you did not activate the environment, call its Python directly instead: `.ven
 
 ### Fixing mistakes: the glossary and re-running
 
-The AI cleanup fixes speech-recognition errors with the help of a glossary: the terms, names and acronyms found on the slides. Technical terms are exactly what speech recognition gets wrong, so a good glossary gives a better transcript.
+The AI cleanup fixes speech-recognition errors with the help of a glossary: the terms, names and acronyms of your course. Technical terms are exactly what speech recognition gets wrong, so a good glossary gives a better transcript.
 
-- Press **Glossary** on a lecture. The first time, it is built from the slide text (a few seconds). Then you can **edit** any term, **remove** wrong ones with ✕, **add** missing ones (type and press Enter), and filter the list. **Save glossary** stores it. The glossary belongs to the slide PDF and is kept in the PDF folder (`.lecture2doc/<pdf name>.glossary.txt`), so it is built only once and every lecture that uses that PDF shares it.
+There is **one glossary for the whole slides folder**, shared by all lectures: terms and abbreviations from one lecture are often used in another, also where they are not on the slide. The first time it is built from the text of all PDFs in the folder.
+
+- Press **Glossary** on a lecture. The first time, it is built from the slide text of all PDFs in the folder (about a minute). Then you can **edit** any term, **remove** wrong ones with ✕, **add** missing ones (type and press Enter), and filter the list. **Save glossary** stores it in the slides folder (`.lecture2doc/glossary.txt`), so it is built only once. Add abbreviations and names the lecturer says but the slides do not show. *Rebuild from slides* starts over from the PDFs and replaces your edits (for example after you add new PDFs to the folder).
 - Press **Process selected** again. Nothing that is already done is repeated: the slide matching and the speech-to-text are kept, and only the AI cleanup runs again with your glossary. A rerun after a glossary edit therefore takes only as long as the cleanup step instead of a full run.
 - Changed only a document option (thumbnails, time stamps, ...)? Use **Rebuild file**: the document is made again from the saved transcript in seconds, without video or internet.
-- **Start over** deletes everything saved for a lecture (transcript and caches) so the next run begins from scratch. The glossary of its PDF is kept.
+- **Start over** deletes everything saved for a lecture (transcript and caches) so the next run begins from scratch. The shared glossary is kept.
 
 An interrupted or failed run (closed browser, lost connection, rate limit) also continues where it stopped when you press **Process selected** again.
 
@@ -81,7 +83,7 @@ For a video called `week3.mp4` with the slides `week3.pdf`, and the output folde
 | File | Meaning |
 | --- | --- |
 | `out/week3.docx` | the Word document |
-| `<PDF folder>/.lecture2doc/week3.glossary.txt` | the glossary of the PDF, one term per line (you can also edit it by hand) |
+| `<PDF folder>/.lecture2doc/glossary.txt` | the glossary shared by all lectures of that folder, one term per line (you can also edit it by hand) |
 | `out/.lecture2doc/week3/segments.json` | which slide was shown when, with the raw and cleaned text |
 | `out/.lecture2doc/week3/matching.json`, `clips.json`, `llm_cache.json` | caches of the slide matching, the speech-to-text and the AI cleanup, so reruns are cheap |
 
@@ -89,7 +91,7 @@ For a video called `week3.mp4` with the slides `week3.pdf`, and the output folde
 
 1. Video frames are sampled and compared with the PDF pages to find which slide is on screen when. Pillarboxed 4:3 slides in a 16:9 recording are handled, and the page number in the corner of the video identifies half-built animated slides.
 2. The audio is cut at every slide change, and each stretch on one slide is transcribed on its own, so every word belongs to exactly one slide.
-3. An LLM fixes recognition errors. The glossary is built once from the text of the whole slide deck of that lecture (all pages of its PDF, no other files), and each stretch of transcript is corrected with that glossary, the list of all slide titles, and the text of the current, previous and next slide. Guardrails fall back to the raw text if the output deviates too much.
+3. An LLM fixes recognition errors. The glossary is built once from the text of all the slide PDFs in the folder (and can be edited by you), and each stretch of transcript is corrected with that glossary, the list of all slide titles, and the text of the current, previous and next slide. Guardrails fall back to the raw text if the output deviates too much.
 4. The Word document is written with real heading styles, so the navigation pane and Ctrl+F work.
 
 Slide titles are taken from the PDF: the largest text in the upper part of each page, so footers and page numbers are ignored.
@@ -132,7 +134,7 @@ The same pipeline without the interface, for scripts and fine tuning:
 python -m lecture2doc VIDEO.mp4 SLIDES.pdf -o lecture.docx
 ```
 
-Without arguments, `python -m lecture2doc` starts the interface. Intermediate files go to the work directory (default `output/<video stem>/`) and are the same as listed above. The glossary is saved next to the PDF (`.lecture2doc/<pdf name>.glossary.txt`): edit it between runs to change the glossary.
+Without arguments, `python -m lecture2doc` starts the interface. Intermediate files go to the work directory (default `output/<video stem>/`) and are the same as listed above. The glossary is saved in the PDF's folder (`.lecture2doc/glossary.txt`) and built from all PDFs in that folder, so keep one course per folder: edit the file between runs to change the glossary.
 
 | Option | Meaning |
 | --- | --- |

@@ -116,20 +116,18 @@ def test_a_video_without_slides_is_not_started(app):
     assert app.jobs["one.mp4"]["status"] == "error" and "No slide PDF" in app.jobs["one.mp4"]["error"]
 
 
-def test_the_glossary_belongs_to_the_pdf_and_is_built_only_once(app, tmp_path, monkeypatch):
+def test_the_glossary_is_shared_by_the_folder_and_built_only_once(app, tmp_path, monkeypatch):
     built = []
     monkeypatch.setattr(pipeline, "make_glossary", lambda pdf: built.append(pdf.name) or "fresh")
     assert app.glossary("one.mp4") == "fresh" and built == ["one.pdf"]
     app.save_glossary("one.mp4", "alpha\n\n beta \n")
     assert app.glossary("one.mp4") == "alpha\nbeta\n" and built == ["one.pdf"]  # read from the file now
-    assert (tmp_path / "pdf" / ".lecture2doc" / "one.glossary.txt").is_file()
-    # another video using the same PDF sees the same glossary
-    app.set_pair("Two.MKV", "one.pdf")
-    assert app.glossary("Two.MKV") == "alpha\nbeta\n"
-    assert [r for r in app.lectures() if r["video"] == "one.mp4"][0]["has_glossary"] is True
+    assert (tmp_path / "pdf" / ".lecture2doc" / "glossary.txt").is_file()
+    assert app.glossary("Two.MKV") == "alpha\nbeta\n"  # another lecture, another PDF: the same glossary
+    assert all(r["has_glossary"] for r in app.lectures())
     assert app.glossary("one.mp4", generate=True) == "fresh" and built == ["one.pdf", "one.pdf"]
-    app.reset("one.mp4")  # starting over keeps the glossary of the PDF
-    assert [r for r in app.lectures() if r["video"] == "one.mp4"][0]["has_glossary"] is True
+    app.reset("one.mp4")  # starting over keeps the shared glossary
+    assert all(r["has_glossary"] for r in app.lectures())
 
 
 @pytest.fixture

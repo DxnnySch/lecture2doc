@@ -152,7 +152,7 @@
 <dialog id="glossary">
   <div class="dlg">
     <h3>Glossary: <span id="g-title"></span></h3>
-    <p>Terms from the slides that the AI uses to fix recognition errors in the transcript. Remove wrong ones, correct spellings, add missing names. It belongs to the slide PDF, so every lecture using this PDF shares it. Changes apply the next time you process a lecture.</p>
+    <p>Terms from the slides that the AI uses to fix recognition errors in the transcript. Remove wrong ones, correct spellings, add missing names. It is shared by all lectures in the slides folder, so add abbreviations and names that come up in several lectures even if they are not on the slides. Changes apply the next time you process a lecture.</p>
     <div class="row"><input type="text" id="g-filter" placeholder="Filter terms…"><span id="g-count" class="stage"></span></div>
     <div class="terms" id="g-terms"></div>
     <div class="row"><input type="text" id="g-new" placeholder="Add a term and press Enter"><button id="g-add">Add</button></div>
@@ -236,14 +236,14 @@ function buildLectures() {
     const pdfrow = el("div", { className: "pdfrow" + (L.pdf ? "" : " missing") }, "Slides:", sel);
     const status = el("div", { className: "statuscell" });
     status.dataset.video = L.video;
-    const gloss = el("button", { className: "small", textContent: "Glossary", title: "View and edit the terms the AI uses for this PDF" });
+    const gloss = el("button", { className: "small", textContent: "Glossary", title: "View and edit the glossary shared by all lectures" });
     gloss.addEventListener("click", () => openGlossary(L.video));
     const docx = el("button", { className: "small", textContent: "Open Word file" });
     docx.addEventListener("click", () => api("/api/open", { kind: "file", video: L.video }).catch(fail));
     const redo = el("button", { className: "small", textContent: "Rebuild file", title: "Apply changed document options without transcribing again" });
     redo.addEventListener("click", () => api("/api/run", { videos: [L.video], rebuild: true }).then(poll, fail));
     const reset = el("button", { className: "small link", textContent: "Start over", title: "Forget all saved results of this lecture" });
-    reset.addEventListener("click", () => { if (confirm("Delete the saved transcript and caches of this lecture? The next run starts from scratch. (The glossary of its PDF is kept.)")) api("/api/reset", { video: L.video }).then(poll, fail); });
+    reset.addEventListener("click", () => { if (confirm("Delete the saved transcript and caches of this lecture? The next run starts from scratch. (The shared glossary is kept.)")) api("/api/reset", { video: L.video }).then(poll, fail); });
     const actions = el("div", { className: "actions" }, gloss, docx, redo, reset);
     actions.dataset.video = L.video;
     const log = el("div", { className: "log" });
@@ -362,8 +362,8 @@ function renderTerms() {
 function setTerms(text) { terms = text.split("\n").map((t) => t.trim()).filter(Boolean); $("g-filter").value = ""; renderTerms(); }
 async function openGlossary(video) {
   const L = S.lectures.find((x) => x.video === video);
-  gVideo = video; $("g-title").textContent = L ? L.pdf : video; $("g-error").textContent = "";
-  terms = []; busy(L && L.has_glossary ? "Loading the glossary…" : "Reading the slides and building the glossary… (the first time takes a few seconds, then it is saved)");
+  gVideo = video; $("g-title").textContent = S.settings.pdf_dir.split(/[\\/]/).filter(Boolean).pop() || "slides folder"; $("g-error").textContent = "";
+  terms = []; busy(L && L.has_glossary ? "Loading the glossary…" : "Reading all the slides in the folder and building the glossary… (the first time takes a minute or so, then it is saved)");
   $("glossary").showModal();
   try { setTerms((await api("/api/glossary?video=" + encodeURIComponent(video))).text); }
   catch (e) { $("g-terms").replaceChildren(); $("g-error").textContent = e.message; ready(); $("g-save").disabled = true; }
@@ -378,7 +378,7 @@ $("g-new").addEventListener("keydown", (e) => { if (e.key === "Enter") addTerm()
 $("g-filter").addEventListener("input", renderTerms);
 $("g-cancel").addEventListener("click", () => $("glossary").close());
 $("g-regen").addEventListener("click", async () => {
-  if (!confirm("Replace the list with a freshly generated one? Your edits are lost.")) return;
+  if (!confirm("Rebuild the list from the slides of all PDFs in the folder? Your edits are lost.")) return;
   $("g-error").textContent = ""; busy("Building the glossary…");
   try { setTerms((await api("/api/glossary/generate", { video: gVideo })).text); } catch (e) { $("g-error").textContent = e.message; renderTerms(); }
 });

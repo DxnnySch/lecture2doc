@@ -5,6 +5,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import openai
@@ -18,12 +19,13 @@ from lecture2doc.pagenumbers import (NumberEvidence, extract_strips, find_number
                                      numbers_from_strips)
 from lecture2doc.segment import (Span, absorb_unmatched, build_spans, extract_frames, match_frames, probe_aspect,
                                  slide_features, smooth, unmatched_seconds)
-from lecture2doc.slides import load_slides
+from lecture2doc.slides import load_slides, pdf_pages
 from lecture2doc.transcribe import transcribe_clips
 
 log = logging.getLogger(__name__)
 
 GLOSSARY_DIR = ".lecture2doc"
+GLOSSARY_FILE = "glossary.txt"
 
 
 class PipelineError(Exception):
@@ -131,13 +133,12 @@ class Job:
 # --- glossary ---------------------------------------------------------------------------------------------------
 
 def glossary_path(pdf) -> Path:
-    """One glossary per slide deck, kept in the PDF's folder so every lecture with that PDF shares it."""
-    pdf = Path(pdf)
-    return pdf.parent / GLOSSARY_DIR / f"{pdf.stem}.glossary.txt"
+    """One glossary per folder of slide PDFs: the terms and abbreviations of a course are used across its lectures."""
+    return Path(pdf).parent / GLOSSARY_DIR / GLOSSARY_FILE
 
 
 def read_glossary(pdf) -> str | None:
-    """The saved (possibly hand-edited) glossary of a deck, one term per line; None if there is none yet."""
+    """The saved (possibly hand-edited) glossary of the PDF's folder, one term per line; None if there is none."""
     try:
         return glossary_path(pdf).read_text(encoding="utf-8")
     except OSError:
@@ -151,14 +152,29 @@ def save_glossary(pdf, text: str) -> None:
     path.write_text("\n".join(terms) + ("\n" if terms else ""), encoding="utf-8")
 
 
-def make_glossary(pdf) -> str:
-    """Build the glossary from the text of the slides and save it (this is the cache: it is built once)."""
-    try:
-        cfg = load_config()  # no ffmpeg needed for this
-    except ConfigError as exc:
-        raise PipelineError(str(exc)) from None
-    text = build_glossary(make_client(cfg), cfg.glossary_model, load_slides(pdf), LLMCache(None),
-                          limiter=RateLimiter(cfg.requests_per_minute))
+def folder_slides(pdf) -> list[SimpleNamespace]:
+    """The text of every slide of every PDF in the folder of `pdf` (what the glossary is built from)."""
+    slides = []
+    for path in sorted(Path(pdf).parent.glob("*.pdf"), key=lambda p: p.name.lower()):
+        try:
+            pages = pdf_pages(path)
+        except Exception as exc:  # an unreadable PDF must not block the others
+            log.warning("skipping %s for the glossary (%s)", path.name, exc)
+            continue
+        for number, (title, text) in enumerate(pages, 1):
+            slides.append(SimpleNamespace(number=number, title=f"{path.stem}: {title or 'untitled'}", text=text))
+    return slides
+
+
+def make_glossary(pdf, client=None, cfg=None, cache=None, limiter=None) -> str:
+    """Build the glossary from the slides of all PDFs in the folder and save it (that file is the cache)."""
+    if cfg is None:
+        try:
+            cfg = load_config()  # no ffmpeg needed for this
+        except ConfigError as exc:
+            raise PipelineError(str(exc)) from None
+    text = build_glossary(client or make_client(cfg), cfg.glossary_model, folder_slides(pdf), cache or LLMCache(None),
+                          limiter=limiter or RateLimiter(cfg.requests_per_minute))
     save_glossary(pdf, text)
     return text
 
@@ -423,8 +439,7 @@ def run(job: Job, reporter: Reporter | None = None) -> Path:
         cache = LLMCache(job.workdir / "llm_cache.json")
         glossary = read_glossary(job.pdf)
         if glossary is None:  # the first run builds it; edit it (in the UI or the file) and run again
-            glossary = build_glossary(client, cfg.glossary_model, slides, cache, limiter=limiter)
-            save_glossary(job.pdf, glossary)
+            glossary = make_glossary(job.pdf, client, cfg, cache, limiter)
         else:
             reporter.log("using the saved glossary")
         outline = build_outline(slides)

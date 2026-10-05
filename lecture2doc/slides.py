@@ -53,6 +53,12 @@ def pdf_titles(pdf_path) -> list[str | None]:
         return [_page_title(page) for page in doc]
 
 
+def pdf_pages(pdf_path) -> list[tuple[str | None, str]]:
+    """(title, text) of every page, without rendering the pictures: for reading a whole folder of decks quickly."""
+    with pymupdf.open(pdf_path) as doc:
+        return [(_page_title(page), page.get_text().strip()) for page in doc]
+
+
 def render_pdf(pdf_path, width: int = 480) -> tuple[list[Image.Image], list[str]]:
     images, texts = [], []
     with pymupdf.open(pdf_path) as doc:
