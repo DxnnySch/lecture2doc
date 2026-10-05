@@ -3,6 +3,8 @@
 
 Usage:
     python lecture2doc.py VIDEO.mp4 SLIDES.pdf SLIDES.pptx [-o OUT.docx] [--no-cleanup] [--keep-raw]
+    python lecture2doc.py VIDEO.mp4 SLIDES.pdf SLIDES.pptx --rebuild   # redo the .docx from a finished run's
+                                                                        # segments.json: no ffmpeg, no API calls
 """
 from __future__ import annotations
 
@@ -36,6 +38,11 @@ def parse_args(argv):
     p.add_argument("--no-cleanup", action="store_true", help="skip LLM transcript cleanup")
     p.add_argument("--keep-raw", action="store_true", help="also put the raw transcript in the document")
     p.add_argument("--no-thumbnails", action="store_true")
+    p.add_argument("--no-timestamps", action="store_true",
+                   help="omit the video time range shown under each slide heading")
+    p.add_argument("--rebuild", action="store_true",
+                   help="rebuild the .docx from an existing segments.json (default: <workdir>/segments.json, or "
+                        "--from-segments FILE) without video, ffmpeg, API key or any API calls")
     p.add_argument("--from-segments", help="reuse slide/time spans from a (hand-corrected) segments.json")
     p.add_argument("--interval", type=float, default=1.0, help="seconds between sampled frames")
     p.add_argument("--threshold", type=float, default=0.6, help="minimum match score for a frame to count")
@@ -43,7 +50,8 @@ def parse_args(argv):
     return p.parse_args(argv)
 
 
-def load_spans(path, n_slides: int) -> list[Span]:
+def _parse_segments(path, n_slides: int, need_text: bool = False) -> list[tuple[Span, str, str]]:
+    """Validated (span, raw, clean) triples sorted by start; raw/clean are only checked when need_text."""
     name = f"segments file {path}"
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -54,7 +62,7 @@ def load_spans(path, n_slides: int) -> list[Span]:
     raw = data.get("spans") if isinstance(data, dict) else None
     if not isinstance(raw, list):
         raise SystemExit(f"{name} must be an object with a 'spans' list")
-    spans = []
+    entries = []
     for i, d in enumerate(raw, 1):
         if not isinstance(d, dict):
             raise SystemExit(f"{name}: span {i} is not an object")
@@ -68,11 +76,19 @@ def load_spans(path, n_slides: int) -> list[Span]:
             raise SystemExit(f"{name}: span {i} has a non-numeric slide/start/end/confidence") from None
         if end <= start:
             raise SystemExit(f"{name}: span {i} has end <= start ({end} <= {start})")
-        spans.append(Span(slide, start, end, conf))
-    bad = sorted({s.slide for s in spans if not 1 <= s.slide <= n_slides})
+        if need_text:
+            for key in ("raw", "clean"):
+                if not isinstance(d.get(key), str):
+                    raise SystemExit(f"{name}: span {i} needs a text field '{key}' (written by a full run)")
+        entries.append((Span(slide, start, end, conf), d.get("raw", ""), d.get("clean", "")))
+    bad = sorted({sp.slide for sp, _, _ in entries if not 1 <= sp.slide <= n_slides})
     if bad:
         raise SystemExit(f"{name} refers to slides {bad}, but the deck has slides 1-{n_slides}")
-    return sorted(spans, key=lambda s: s.start)
+    return sorted(entries, key=lambda e: e[0].start)
+
+
+def load_spans(path, n_slides: int) -> list[Span]:
+    return [span for span, _, _ in _parse_segments(path, n_slides)]
 
 
 def print_summary(spans: list[Span], n_slides: int) -> None:
@@ -92,7 +108,9 @@ def print_summary(spans: list[Span], n_slides: int) -> None:
 
 
 def check_inputs(args) -> None:
-    checks = [("video", args.video), ("PDF", args.pdf), ("PPTX", args.pptx)]
+    checks = [("PDF", args.pdf), ("PPTX", args.pptx)]
+    if not args.rebuild:  # a rebuild never touches the video
+        checks.insert(0, ("video", args.video))
     if args.from_segments:
         checks.append(("segments file", args.from_segments))
     for label, path in checks:
@@ -100,10 +118,32 @@ def check_inputs(args) -> None:
             raise SystemExit(f"{label} not found: {path}")
 
 
+def rebuild(args) -> int:
+    """Re-render the .docx from a finished run's segments.json: offline, no video, no API."""
+    video = Path(args.video)
+    workdir = Path(args.workdir) if args.workdir else Path("output") / video.stem
+    seg_path = Path(args.from_segments) if args.from_segments else workdir / "segments.json"
+    if not seg_path.is_file():
+        raise SystemExit(f"segments file not found: {seg_path} (run the full pipeline first, or pass --from-segments)")
+    out = Path(args.output) if args.output else workdir / f"{video.stem}.docx"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    print("Loading slides...")
+    slides = load_slides(args.pdf, args.pptx)
+    print(f"  {len(slides)} slides; rebuilding from {seg_path}")
+    entries = _parse_segments(seg_path, len(slides), need_text=True)
+    write_docx(out, video.stem, slides,
+               [SpanText(sp.slide, sp.start, clean, raw, sp.end) for sp, raw, clean in entries],
+               thumbnails=not args.no_thumbnails, keep_raw=args.keep_raw, timestamps=not args.no_timestamps)
+    print(f"Wrote {out}")
+    return 0
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     check_inputs(args)
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
+    if args.rebuild:
+        return rebuild(args)
     try:
         check_ffmpeg()
         cfg = load_config()
@@ -167,8 +207,8 @@ def main(argv=None) -> int:
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     write_docx(out, video.stem, slides,
-               [SpanText(s.slide, s.start, c, r) for s, r, c in zip(spans, raws, cleans)],
-               thumbnails=not args.no_thumbnails, keep_raw=args.keep_raw)
+               [SpanText(s.slide, s.start, c, r, s.end) for s, r, c in zip(spans, raws, cleans)],
+               thumbnails=not args.no_thumbnails, keep_raw=args.keep_raw, timestamps=not args.no_timestamps)
     print(f"Wrote {out}")
     return 0
 

@@ -139,3 +139,41 @@ def test_control_characters_stripped(tmp_path):
     assert ("Heading 1", "Slide 1 – SlideTitle") in paras, f"Heading not found in paras"
     assert ("Normal", "Textwithcontrol chars.") in paras, f"Span text not found in paras"
     assert ("Normal", "Raw: Rawtext") in paras, f"Raw text not found in paras"
+
+
+def subtitles(paras):
+    return [t for s, t in paras if s == "Subtitle"]
+
+
+def test_subtitle_line_with_time_range_after_heading(tmp_path):
+    out = tmp_path / "o.docx"
+    write_docx(out, "L", slides(), [SpanText(1, 0, "Hello there.", "r", end=75)])
+    _, paras = read(out)
+    assert subtitles(paras) == ["00:00 – 01:15"]
+    heading_idx = paras.index(("Heading 1", "Slide 1 – Intro"))
+    assert paras[heading_idx + 1] == ("Subtitle", "00:00 – 01:15")
+
+
+def test_subtitle_lists_every_range_of_a_revisited_slide(tmp_path):
+    out = tmp_path / "o.docx"
+    spans = [SpanText(1, 0, "First.", "r", end=30), SpanText(2, 30, "Middle.", "r", end=3700),
+             SpanText(1, 3700, "Back.", "r", end=3720)]
+    write_docx(out, "L", slides(), spans)
+    _, paras = read(out)
+    assert subtitles(paras) == ["00:00 – 00:30 · 1:01:40 – 1:02:00", "00:30 – 1:01:40"]
+
+
+def test_subtitle_for_slide_without_speech_and_none_for_unseen(tmp_path):
+    out = tmp_path / "o.docx"
+    write_docx(out, "L", slides(), [SpanText(1, 10, "   ", "", end=20)])
+    _, paras = read(out)
+    assert subtitles(paras) == ["00:10 – 00:20"]  # slides 2 and 3 were never shown: no line
+    assert paras.count(("Normal", "(no speech)")) == 3
+
+
+def test_no_timestamps_option_and_legacy_spans_without_end(tmp_path):
+    out = tmp_path / "o.docx"
+    write_docx(out, "L", slides(), [SpanText(1, 0, "Hi.", "r", end=5)], timestamps=False)
+    assert subtitles(read(out)[1]) == []
+    write_docx(out, "L", slides(), [SpanText(1, 0, "Hi.", "r")])  # no end known
+    assert subtitles(read(out)[1]) == []

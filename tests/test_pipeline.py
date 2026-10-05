@@ -230,3 +230,89 @@ def test_transcribe_api_error_exits_without_traceback_or_key(tmp_path, monkeypat
     assert "speech-to-text failed" in msg
     assert "invalid credentials" in msg
     assert "dummy" not in msg
+
+
+def subtitle_lines(path):
+    return [p.text for p in Document(path).paragraphs if p.style.name == "Subtitle"]
+
+
+def non_subtitle(path):
+    return [(p.style.name, p.text) for p in Document(path).paragraphs if p.style.name != "Subtitle"]
+
+
+def test_normal_run_adds_time_subtitles(tmp_path, monkeypatch):
+    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    out = run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    lines = subtitle_lines(out)
+    assert len(lines) == 2  # slide 1 (two visits) and slide 2; slide 3 never shown
+    assert re.fullmatch(r"\d\d:\d\d – \d\d:\d\d · \d\d:\d\d – \d\d:\d\d", lines[0])
+    assert re.fullmatch(r"\d\d:\d\d – \d\d:\d\d", lines[1])
+    assert subtitle_lines(run(video, pdf, pptx, tmp_path, "--no-cleanup", "--no-timestamps",
+                              out=tmp_path / "plain.docx")) == []
+
+
+def forbid_heavy_work(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("heavy work during --rebuild")
+    for name in ("transcribe_words", "extract_frames", "match_frames", "probe_aspect", "load_config",
+                 "check_ffmpeg", "make_client", "build_glossary", "cleanup_spans"):
+        monkeypatch.setattr(lecture2doc, name, boom)
+
+
+def test_rebuild_adds_subtitles_offline_without_video_or_key(tmp_path, monkeypatch):
+    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    old = run(video, pdf, pptx, tmp_path, "--no-cleanup", "--no-timestamps", out=tmp_path / "old.docx")
+    assert subtitle_lines(old) == []
+    video.unlink()  # the video is not needed any more
+    forbid_heavy_work(monkeypatch)
+    new = tmp_path / "new.docx"
+    rc = lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(new), "--workdir", str(tmp_path / "w"),
+                           "--rebuild"])
+    assert rc == 0
+    assert len(subtitle_lines(new)) == 2
+    assert non_subtitle(new) == non_subtitle(old)  # identical text, only the time lines were added
+
+
+def test_rebuild_uses_cleaned_text_and_keeps_segments_file_untouched(tmp_path, monkeypatch):
+    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    segfile = tmp_path / "w" / "segments.json"
+    data = json.loads(segfile.read_text(encoding="utf-8"))
+    data["spans"][1]["clean"] = "World, corrected."
+    segfile.write_text(json.dumps(data), encoding="utf-8")
+    before = segfile.read_text(encoding="utf-8")
+    forbid_heavy_work(monkeypatch)
+    out = tmp_path / "r.docx"
+    lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(out), "--workdir", str(tmp_path / "w"),
+                      "--rebuild", "--keep-raw"])
+    texts = [p.text for p in Document(out).paragraphs]
+    assert "World, corrected." in texts and "Raw: world" in texts
+    assert segfile.read_text(encoding="utf-8") == before
+
+
+def test_rebuild_from_explicit_segments_file(tmp_path, monkeypatch):
+    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    seg = tmp_path / "elsewhere.json"
+    seg.write_text(json.dumps({"spans": [{"slide": 2, "start": 5, "end": 65, "raw": "r", "clean": "Cleaned."}]}),
+                   encoding="utf-8")
+    forbid_heavy_work(monkeypatch)
+    out = tmp_path / "e.docx"
+    lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(out), "--workdir", str(tmp_path / "w2"),
+                      "--rebuild", "--from-segments", str(seg)])
+    assert subtitle_lines(out) == ["00:05 – 01:05"]
+
+
+@pytest.mark.parametrize("content, message", [
+    (None, "segments file"),                                                   # no file at all
+    ({"spans": [{"slide": 1, "start": 0, "end": 5, "raw": "r"}]}, "'clean'"),  # old/hand-made file
+    ({"spans": [{"slide": 1, "start": 0, "end": 5, "clean": 3, "raw": "r"}]}, "'clean'"),
+])
+def test_rebuild_requires_a_complete_segments_file(tmp_path, monkeypatch, content, message):
+    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    if content is not None:
+        (tmp_path / "w").mkdir()
+        (tmp_path / "w" / "segments.json").write_text(json.dumps(content), encoding="utf-8")
+    forbid_heavy_work(monkeypatch)
+    with pytest.raises(SystemExit, match=message):
+        lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(tmp_path / "x.docx"),
+                          "--workdir", str(tmp_path / "w"), "--rebuild"])

@@ -17,6 +17,7 @@ class SpanText:
     start: float
     text: str
     raw: str
+    end: float | None = None
 
 
 def _clean_xml(s: str) -> str:
@@ -60,10 +61,20 @@ def paragraphize(text: str, per: int = 4) -> list[str]:
     return result
 
 
+def time_ranges(span_texts: list[SpanText]) -> dict[int, str]:
+    """Per slide, the video time ranges it was shown, e.g. '12:30 – 15:02 · 40:10 – 41:00'."""
+    ranges: dict[int, list[str]] = {}
+    for st in sorted(span_texts, key=lambda s: s.start):
+        if st.end is not None:
+            ranges.setdefault(st.slide, []).append(f"{fmt_time(st.start)} – {fmt_time(st.end)}")
+    return {slide: " · ".join(r) for slide, r in ranges.items()}
+
+
 def write_docx(path, title: str, slides, span_texts: list[SpanText],
-               thumbnails: bool = True, keep_raw: bool = False) -> None:
+               thumbnails: bool = True, keep_raw: bool = False, timestamps: bool = True) -> None:
     doc = Document()
     doc.add_heading(_clean_xml(title), 0)
+    shown = time_ranges(span_texts) if timestamps else {}
     by_slide: dict[int, list[SpanText]] = {}
     for st in sorted(span_texts, key=lambda s: s.start):
         if st.text.strip():
@@ -71,6 +82,8 @@ def write_docx(path, title: str, slides, span_texts: list[SpanText],
     for s in slides:
         heading = f"Slide {s.number} – {_clean_xml(s.title)}" if s.title else f"Slide {s.number}"
         doc.add_heading(heading, 1)
+        if s.number in shown:
+            doc.add_paragraph(shown[s.number], style="Subtitle")
         if thumbnails:
             buf = BytesIO()
             s.image.save(buf, "PNG")
