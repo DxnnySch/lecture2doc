@@ -28,15 +28,25 @@ def test_end_to_end_no_cleanup(tmp_path, monkeypatch):
     assert lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(out), "--workdir", str(tmp_path / "w"),
                              "--no-cleanup"]) == 0
     texts = [(p.style.name, p.text) for p in Document(out).paragraphs]
+    # one page per stretch of the lecture, in lecture order: Alpha, Beta, Alpha again; Gamma was never shown
+    assert [t for style, t in texts if style == "Heading 1"] == ["Slide 1 – Alpha", "Slide 2 – Beta", "Slide 1 – Alpha"]
+    assert [t for style, t in texts if style == "Normal" and t] == ["hello", "world", "again"]
+    assert ("Normal", "(no speech)") not in texts
+    seg = json.loads((tmp_path / "w" / "segments.json").read_text(encoding="utf-8"))
+    assert [s["slide"] for s in seg["spans"]] == [1, 2, 1]
+    assert "dummy" not in json.dumps(seg)
+
+
+def test_end_to_end_group_by_slide(tmp_path, monkeypatch):
+    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    out = run(video, pdf, pptx, tmp_path, "--no-cleanup", "--group-by-slide")
+    texts = [(p.style.name, p.text) for p in Document(out).paragraphs]
     assert ("Heading 1", "Slide 1 – Alpha") in texts and ("Heading 1", "Slide 3 – Gamma") in texts
     assert ("Normal", "[00:00] hello") in texts
     # the revisit start time may differ by +-1 s from 8
     assert any(style == "Normal" and re.fullmatch(r"\[\d\d:\d\d\] again", t) for style, t in texts)
     assert ("Normal", "world") in texts
     assert ("Normal", "(no speech)") in texts  # slide 3 never shown
-    seg = json.loads((tmp_path / "w" / "segments.json").read_text(encoding="utf-8"))
-    assert [s["slide"] for s in seg["spans"]] == [1, 2, 1]
-    assert "dummy" not in json.dumps(seg)
 
 
 def test_from_segments_skips_matching(tmp_path, monkeypatch):
@@ -250,9 +260,13 @@ def test_normal_run_adds_time_subtitles(tmp_path, monkeypatch):
     video, pdf, pptx = setup(tmp_path, monkeypatch)
     out = run(video, pdf, pptx, tmp_path, "--no-cleanup")
     lines = subtitle_lines(out)
-    assert len(lines) == 2  # slide 1 (two visits) and slide 2; slide 3 never shown
-    assert re.fullmatch(r"\d\d:\d\d – \d\d:\d\d · \d\d:\d\d – \d\d:\d\d", lines[0])
-    assert re.fullmatch(r"\d\d:\d\d – \d\d:\d\d", lines[1])
+    assert len(lines) == 3  # one per page: slide 1, slide 2, slide 1 again; slide 3 never shown
+    assert all(re.fullmatch(r"\d\d:\d\d – \d\d:\d\d", line) for line in lines)
+    grouped = subtitle_lines(run(video, pdf, pptx, tmp_path, "--no-cleanup", "--group-by-slide",
+                                 out=tmp_path / "grouped.docx"))
+    assert len(grouped) == 2  # slide 1 (two visits) and slide 2
+    assert re.fullmatch(r"\d\d:\d\d – \d\d:\d\d · \d\d:\d\d – \d\d:\d\d", grouped[0])
+    assert re.fullmatch(r"\d\d:\d\d – \d\d:\d\d", grouped[1])
     assert subtitle_lines(run(video, pdf, pptx, tmp_path, "--no-cleanup", "--no-timestamps",
                               out=tmp_path / "plain.docx")) == []
 
@@ -275,7 +289,7 @@ def test_rebuild_adds_subtitles_offline_without_video_or_key(tmp_path, monkeypat
     rc = lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(new), "--workdir", str(tmp_path / "w"),
                            "--rebuild"])
     assert rc == 0
-    assert len(subtitle_lines(new)) == 2
+    assert len(subtitle_lines(new)) == 3
     assert non_subtitle(new) == non_subtitle(old)  # identical text, only the time lines were added
 
 
@@ -429,3 +443,19 @@ def test_unreadable_numbers_fall_back_to_the_picture_with_a_warning(tmp_path, mo
     run(video, pdf, pptx, tmp_path, "--no-cleanup")
     assert "cannot read the slide numbers" in caplog.text
     assert segment_slides(tmp_path)  # it still produced a document
+
+
+def test_group_by_slide_option_also_applies_when_rebuilding(tmp_path, monkeypatch):
+    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    forbid_heavy_work(monkeypatch)
+    out = tmp_path / "grouped.docx"
+    lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(out), "--workdir", str(tmp_path / "w"),
+                      "--rebuild", "--group-by-slide"])
+    headings = [p.text for p in Document(out).paragraphs if p.style.name == "Heading 1"]
+    assert headings == ["Slide 1 – Alpha", "Slide 2 – Beta", "Slide 3 – Gamma"]  # every slide once, in slide order
+    default = tmp_path / "default.docx"
+    lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(default), "--workdir", str(tmp_path / "w"),
+                      "--rebuild"])
+    assert [p.text for p in Document(default).paragraphs if p.style.name == "Heading 1"] == [
+        "Slide 1 – Alpha", "Slide 2 – Beta", "Slide 1 – Alpha"]

@@ -29,7 +29,7 @@ How it works: video frames are sampled and matched against the PDF pages to find
 
 The PDF supplies the page images used for matching; the PPTX supplies slide titles. Hidden PPTX slides are skipped (they are not in the PDF). If the PPTX is unreadable or its slide count does not match the PDF, titles are taken from the PDF (the largest text in the upper part of each page, so footers are ignored) and a warning is printed.
 
-In the document, each slide gets a heading (`Slide N – Title`), a subtitle line with the time range(s) it was on screen in the video (e.g. `12:30 – 15:02`, several ranges if the lecturer returned to it), its thumbnail and the transcript. Every slide starts on a new page.
+The document has one page per stretch of the lecture on one slide, in lecture order. Each page has a heading (`Slide N – Title`), a subtitle line with the time range it was on screen in the video (e.g. `12:30 – 15:02`), the slide's thumbnail and the transcript of that stretch. If the lecturer goes 24 → 25 → 24 → 23 → 26, that is five pages in exactly that order, even though slide 24 appears twice. Slides that were never shown get no page. With `--group-by-slide` the document instead has one section per slide of the deck, in slide order, with all visits of a slide together (time-stamped paragraphs).
 
 Intermediate files go to the work directory (default `output/<video stem>/`): `words.json` (STT cache, so reruns are free; progress is also cached per chunk in `words.json.chunks.json`, so a failed run resumes where it stopped), `llm_cache.json` (cleanup cache), and `segments.json`.
 
@@ -44,12 +44,14 @@ Intermediate files go to the work directory (default `output/<video stem>/`): `w
 | `--keep-raw` | also put the raw transcript in the document |
 | `--no-thumbnails` | omit slide thumbnails |
 | `--no-timestamps` | omit the video time range under each slide heading |
-| `--no-page-breaks` | do not start every slide on a new page (more compact) |
+| `--group-by-slide` | one section per slide of the deck, in slide order, instead of one page per stretch of the lecture |
+| `--no-page-breaks` | do not start every page on a new page (more compact) |
 | `--rebuild` | rebuild the `.docx` from an existing `segments.json` only: no video, ffmpeg, API key or API calls (see below) |
 | `--from-segments FILE` | reuse the slide/time spans from a (hand-corrected) `segments.json` |
 | `--interval` | seconds between sampled frames (default 1.0) |
 | `--threshold` | minimum match score for a frame to count (default 0.6) |
 | `--smooth` | majority-vote window in frames (default 5) |
+| `--no-slide-numbers` | do not use the page number in the corner of the video to identify slides (see below) |
 | `--snap-seconds` | move a slide change that falls inside a sentence to the nearer end of that sentence if it is at most this many seconds away (default 4, `0` = cut exactly at the slide change) |
 
 A summary after matching lists seconds matched per slide, the unmatched percentage, and slides never shown. Many unmatched seconds or flicker between neighbouring slides: tune `--threshold` (0.5-0.8) and `--smooth` (3-9); this reruns quickly because STT is cached.
@@ -63,6 +65,10 @@ A summary after matching lists seconds matched per slide, the unmatched percenta
 ```
 
 Words are re-assigned to the edited spans using the cached `words.json`.
+
+## How slides are recognised
+
+Every video frame is compared with the PDF pages. Slides that are built up by animation are the weak spot of that: a half-built slide hardly resembles its finished PDF page and may look more like another, emptier page. So, when the PDF prints page numbers (usually bottom right), the tool also compares the number area of each frame with the number area of every PDF page (no OCR; the PDF supplies how the numbers look). Where the corner clearly shows a page's number, that page wins over the whole-slide match; pages that print the same number are told apart by the picture. If the PDF has no usable page numbers, or the corner is not visible, matching falls back to whole slides. The matching summary says how many frames the number could be read in and how many frames it changed. `--no-slide-numbers` switches this off. It costs one more pass over the video.
 
 ## Where the text is cut between slides
 

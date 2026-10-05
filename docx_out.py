@@ -70,39 +70,78 @@ def time_ranges(span_texts: list[SpanText]) -> dict[int, str]:
     return {slide: " · ".join(r) for slide, r in ranges.items()}
 
 
-def write_docx(path, title: str, slides, span_texts: list[SpanText],
-               thumbnails: bool = True, keep_raw: bool = False, timestamps: bool = True,
-               page_breaks: bool = True) -> None:
-    doc = Document()
-    doc.add_heading(_clean_xml(title), 0)
+def _add_heading(doc, slide, page_break: bool) -> None:
+    text = f"Slide {slide.number} – {_clean_xml(slide.title)}" if slide.title else f"Slide {slide.number}"
+    paragraph = doc.add_heading(text, 1)
+    if page_break:
+        paragraph.paragraph_format.page_break_before = True
+
+
+def _add_thumbnail(doc, slide) -> None:
+    buf = BytesIO()
+    slide.image.save(buf, "PNG")
+    buf.seek(0)
+    doc.add_picture(buf, width=Inches(3.5))
+
+
+def _add_transcript(doc, text: str, raw: str, keep_raw: bool, prefix: str = "") -> None:
+    for k, para in enumerate(paragraphize(text)):
+        doc.add_paragraph((prefix if k == 0 else "") + _clean_xml(para))
+    if keep_raw:
+        run = doc.add_paragraph().add_run("Raw: " + _clean_xml(raw))
+        run.italic = True
+        run.font.size = Pt(9)
+
+
+def _write_segments(doc, slides, span_texts, thumbnails, keep_raw, timestamps, page_breaks) -> None:
+    """One page per stretch of the lecture on one slide, in lecture order (a revisited slide gets a new page)."""
+    by_number = {s.number: s for s in slides}
+    shown = 0
+    for st in sorted(span_texts, key=lambda s: s.start):
+        slide = by_number.get(st.slide)
+        if slide is None:
+            continue
+        _add_heading(doc, slide, page_breaks and shown > 0)  # the first stays with the document title
+        shown += 1
+        if timestamps and st.end is not None:
+            doc.add_paragraph(f"{fmt_time(st.start)} – {fmt_time(st.end)}", style="Subtitle")
+        if thumbnails:
+            _add_thumbnail(doc, slide)
+        if st.text.strip():
+            _add_transcript(doc, st.text, st.raw, keep_raw)
+        else:
+            doc.add_paragraph().add_run("(no speech)").italic = True
+
+
+def _write_by_slide(doc, slides, span_texts, thumbnails, keep_raw, timestamps, page_breaks) -> None:
+    """Every slide of the deck once, in slide order, with all of its visits under one heading."""
     shown = time_ranges(span_texts) if timestamps else {}
     by_slide: dict[int, list[SpanText]] = {}
     for st in sorted(span_texts, key=lambda s: s.start):
         if st.text.strip():
             by_slide.setdefault(st.slide, []).append(st)
     for index, s in enumerate(slides):
-        heading = f"Slide {s.number} – {_clean_xml(s.title)}" if s.title else f"Slide {s.number}"
-        paragraph = doc.add_heading(heading, 1)
-        if page_breaks and index > 0:  # slide 1 stays on the page with the document title
-            paragraph.paragraph_format.page_break_before = True
+        _add_heading(doc, s, page_breaks and index > 0)  # slide 1 stays with the document title
         if s.number in shown:
             doc.add_paragraph(shown[s.number], style="Subtitle")
         if thumbnails:
-            buf = BytesIO()
-            s.image.save(buf, "PNG")
-            buf.seek(0)
-            doc.add_picture(buf, width=Inches(3.5))
+            _add_thumbnail(doc, s)
         entries = by_slide.get(s.number, [])
         if not entries:
             doc.add_paragraph().add_run("(no speech)").italic = True
             continue
         timed = len(entries) > 1
         for e in entries:
-            for k, para in enumerate(paragraphize(e.text)):
-                prefix = f"[{fmt_time(e.start)}] " if timed and k == 0 else ""
-                doc.add_paragraph(prefix + _clean_xml(para))
-            if keep_raw:
-                run = doc.add_paragraph().add_run("Raw: " + _clean_xml(e.raw))
-                run.italic = True
-                run.font.size = Pt(9)
+            _add_transcript(doc, e.text, e.raw, keep_raw, prefix=f"[{fmt_time(e.start)}] " if timed else "")
+
+
+def write_docx(path, title: str, slides, span_texts: list[SpanText],
+               thumbnails: bool = True, keep_raw: bool = False, timestamps: bool = True,
+               page_breaks: bool = True, group_by_slide: bool = False) -> None:
+    """By default one page per stretch of the lecture on one slide, in lecture order; with group_by_slide every
+    slide of the deck appears once, in slide order, with all its visits under one heading."""
+    doc = Document()
+    doc.add_heading(_clean_xml(title), 0)
+    write = _write_by_slide if group_by_slide else _write_segments
+    write(doc, slides, span_texts, thumbnails, keep_raw, timestamps, page_breaks)
     doc.save(path)

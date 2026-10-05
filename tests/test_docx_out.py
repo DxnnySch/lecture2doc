@@ -1,8 +1,15 @@
 from docx import Document
 from PIL import Image
 
-from docx_out import SpanText, fmt_time, paragraphize, write_docx
+from docx_out import SpanText, fmt_time, paragraphize
+from docx_out import write_docx as _write_docx
 from slides import Slide
+
+
+def write_docx(*args, **kwargs):
+    """These tests cover the group-by-slide layout (the default layout is covered in test_docx_segments.py)."""
+    kwargs.setdefault("group_by_slide", True)
+    return _write_docx(*args, **kwargs)
 
 
 def slides():
