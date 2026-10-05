@@ -46,18 +46,18 @@ Copy `.env.example` to `.env` (Windows: `copy .env.example .env`) and replace `s
 **4. Run it**
 
 ```bash
-python lecture2doc.py lecture.mp4 slides.pdf slides.pptx -o lecture.docx
+python -m lecture2doc lecture.mp4 slides.pdf slides.pptx -o lecture.docx
 ```
 
 That is all. A long lecture takes a while (transcription and cleanup call the API); everything is cached, so if a run is interrupted, running the same command again continues where it stopped.
 
-If you did not activate the environment, call its Python directly instead: `.venv/Scripts/python lecture2doc.py ...` (Windows) or `.venv/bin/python lecture2doc.py ...` (macOS/Linux).
+If you did not activate the environment, call its Python directly instead: `.venv/Scripts/python -m lecture2doc ...` (Windows) or `.venv/bin/python -m lecture2doc ...` (macOS/Linux).
 
 ## How it works
 
 1. Video frames are sampled and compared with the PDF pages to find which slide is on screen when. Pillarboxed 4:3 slides in a 16:9 recording are handled, and the page number in the corner of the video identifies half-built animated slides.
 2. The audio is cut at every slide change, and each stretch on one slide is transcribed on its own, so every word belongs to exactly one slide.
-3. An LLM fixes recognition errors using a glossary built from the slide text. Guardrails fall back to the raw text if the output deviates too much.
+3. An LLM fixes recognition errors. The glossary is built once from the text of the whole slide deck you pass in (all slides, no other files), and each stretch of transcript is corrected with that glossary, the list of all slide titles, and the text of the current, previous and next slide. Guardrails fall back to the raw text if the output deviates too much.
 4. The Word document is written with real heading styles, so the navigation pane and Ctrl+F work.
 
 ## Configuration
@@ -97,7 +97,7 @@ The tests need ffmpeg on your `PATH` but no API key (API calls are mocked).
 ## Usage in detail
 
 ```bash
-python lecture2doc.py VIDEO.mp4 SLIDES.pdf SLIDES.pptx -o lecture.docx
+python -m lecture2doc VIDEO.mp4 SLIDES.pdf SLIDES.pptx -o lecture.docx
 ```
 
 The PDF supplies the page images used for matching; the PPTX supplies slide titles. Hidden PPTX slides are skipped (they are not in the PDF). If the PPTX is unreadable or its slide count does not match the PDF, titles are taken from the PDF (the largest text in the upper part of each page, so footers are ignored) and a warning is printed.
@@ -133,7 +133,7 @@ A summary after matching lists seconds matched per slide, the unmatched percenta
 `segments.json` holds every span (`slide`, `start`, `end`, `confidence`, `audio_start`, `audio_end`, `raw`, `clean`). `start`/`end` are when the slide was on screen; `audio_start`/`audio_end` are where the audio was cut for its transcript. If a slide assignment is wrong, edit the `slide`/`start`/`end` values and regenerate with the corrected spans:
 
 ```bash
-python lecture2doc.py VIDEO.mp4 SLIDES.pdf SLIDES.pptx --from-segments output/<stem>/segments.json
+python -m lecture2doc VIDEO.mp4 SLIDES.pdf SLIDES.pptx --from-segments output/<stem>/segments.json
 ```
 
 The audio is cut again at the edited times; only the clips whose cut times changed are transcribed again (and cleaned again by the LLM), everything else comes from the caches.
@@ -157,7 +157,7 @@ If the `.docx` is open in Word it cannot be overwritten: the tool then says so, 
 Layout options (`--no-timestamps`, `--no-page-breaks`, `--no-thumbnails`, `--keep-raw`) and the slide titles only affect the Word file, so you never need to transcribe again to change them. `--rebuild` regenerates the `.docx` from the saved `segments.json` (which holds the cleaned and raw text and the times) plus the PDF/PPTX, in seconds, without video, ffmpeg, API key or network:
 
 ```bash
-python lecture2doc.py VIDEO.mp4 SLIDES.pdf SLIDES.pptx --rebuild
+python -m lecture2doc VIDEO.mp4 SLIDES.pdf SLIDES.pptx --rebuild
 ```
 
 It reads `<workdir>/segments.json` (or the file given with `--from-segments`), overwrites the `.docx` and never touches `segments.json` or the caches. The video path is only used to name the output. You can hand-edit `clean` text or slide/time spans in `segments.json` first.

@@ -8,7 +8,12 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-DEFAULT_ENV = Path(__file__).parent / ".env"
+
+
+def default_env() -> Path:
+    """.env in the current folder, else the one next to the project checkout."""
+    here = Path.cwd() / ".env"
+    return here if here.exists() else Path(__file__).resolve().parent.parent / ".env"
 
 
 class ConfigError(Exception):
@@ -29,7 +34,7 @@ class Config:
 
 
 def load_config(env_path: Path | None = None) -> Config:
-    values = {**dotenv_values(env_path or DEFAULT_ENV), **os.environ}
+    values = {**dotenv_values(env_path or default_env()), **os.environ}
     key = values.get("SCADS_API_KEY")
     if not key:
         raise ConfigError("SCADS_API_KEY is not set (put it in .env, see .env.example)")

@@ -16,7 +16,7 @@ import numpy as np
 import pymupdf
 from PIL import Image
 
-from segment import _normalise, probe_size
+from lecture2doc.segment import _normalise, probe_size
 
 SCALE = 2             # pixels per PDF point in strips and templates
 MIN_COVERAGE = 0.6    # share of pages that must print a (distinct) number for the corner to be usable

@@ -3,10 +3,10 @@ import pymupdf
 import pytest
 
 from helpers import animation_state, make_pdf, make_video
-from pagenumbers import (NumberEvidence, NumberRegion, extract_strips, find_number_region, frame_crop,
+from lecture2doc.pagenumbers import (NumberEvidence, NumberRegion, extract_strips, find_number_region, frame_crop,
                          number_templates, numbers_from_strips)
-from segment import build_spans, extract_frames, match_frames, probe_size, slide_features, smooth
-from slides import render_pdf
+from lecture2doc.segment import build_spans, extract_frames, match_frames, probe_size, slide_features, smooth
+from lecture2doc.slides import render_pdf
 
 
 def numbered_deck(tmp_path, n=4):

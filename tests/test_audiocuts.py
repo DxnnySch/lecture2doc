@@ -1,8 +1,8 @@
 import pytest
 
-from audiocuts import Clip, detect_silences, merge_silences, plan_cuts
+from lecture2doc.audiocuts import Clip, detect_silences, merge_silences, plan_cuts
 from helpers import make_wav
-from segment import Span
+from lecture2doc.segment import Span
 
 
 def test_silences_are_found_with_their_times_including_one_at_the_very_end(tmp_path):

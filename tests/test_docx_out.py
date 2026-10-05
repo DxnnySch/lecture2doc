@@ -1,9 +1,9 @@
 from docx import Document
 from PIL import Image
 
-from docx_out import SpanText, fmt_time, paragraphize
-from docx_out import write_docx as _write_docx
-from slides import Slide
+from lecture2doc.docx_out import SpanText, fmt_time, paragraphize
+from lecture2doc.docx_out import write_docx as _write_docx
+from lecture2doc.slides import Slide
 
 
 def write_docx(*args, **kwargs):

@@ -2,9 +2,9 @@ import numpy as np
 import pytest
 
 from helpers import make_pdf, make_video
-from segment import (Span, absorb_unmatched, build_spans, extract_frames, match_frames, probe_aspect, slide_features,
+from lecture2doc.segment import (Span, absorb_unmatched, build_spans, extract_frames, match_frames, probe_aspect, slide_features,
                      smooth, unmatched_seconds)
-from slides import render_pdf
+from lecture2doc.slides import render_pdf
 
 
 def run_pipeline(tmp_path, order, n_slides=3, threshold=0.6):

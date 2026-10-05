@@ -4,10 +4,10 @@ import re
 import pytest
 from docx import Document
 
-import lecture2doc
-from api import RateLimiter
+from lecture2doc import cli as lecture2doc
+from lecture2doc.api import RateLimiter
 from helpers import animation_state, make_pdf, make_pptx, make_video, make_wav
-from slides import render_pdf
+from lecture2doc.slides import render_pdf
 
 
 def fake_stt(texts):

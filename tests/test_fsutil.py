@@ -4,8 +4,8 @@ import os
 
 import pytest
 
-import fsutil
-from fsutil import atomic_write_json
+from lecture2doc import fsutil
+from lecture2doc.fsutil import atomic_write_json
 
 
 def test_a_briefly_locked_target_is_retried(tmp_path, monkeypatch):

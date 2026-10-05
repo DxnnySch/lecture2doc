@@ -2,8 +2,8 @@
 """Turn a lecture video + slide PDF/PPTX into a Word document with one transcript section per slide.
 
 Usage:
-    python lecture2doc.py VIDEO.mp4 SLIDES.pdf SLIDES.pptx [-o OUT.docx] [--no-cleanup] [--keep-raw]
-    python lecture2doc.py VIDEO.mp4 SLIDES.pdf SLIDES.pptx --rebuild   # redo the .docx from a finished run's
+    python -m lecture2doc VIDEO.mp4 SLIDES.pdf SLIDES.pptx [-o OUT.docx] [--no-cleanup] [--keep-raw]
+    python -m lecture2doc VIDEO.mp4 SLIDES.pdf SLIDES.pptx --rebuild   # redo the .docx from a finished run's
                                                                         # segments.json: no ffmpeg, no API calls
 """
 from __future__ import annotations
@@ -16,17 +16,17 @@ from pathlib import Path
 import numpy as np
 import openai
 
-from api import RateLimiter, make_client
-from cleanup import LLMCache, build_glossary, build_outline, cleanup_spans
-from audiocuts import CutReport, detect_silences, plan_cuts
-from config import ConfigError, check_ffmpeg, load_config
-from docx_out import SpanText, write_docx
-from pagenumbers import (NumberEvidence, extract_strips, find_number_region, number_templates,
+from lecture2doc.api import RateLimiter, make_client
+from lecture2doc.cleanup import LLMCache, build_glossary, build_outline, cleanup_spans
+from lecture2doc.audiocuts import CutReport, detect_silences, plan_cuts
+from lecture2doc.config import ConfigError, check_ffmpeg, load_config
+from lecture2doc.docx_out import SpanText, write_docx
+from lecture2doc.pagenumbers import (NumberEvidence, extract_strips, find_number_region, number_templates,
                          numbers_from_strips)
-from segment import (Span, absorb_unmatched, build_spans, extract_frames, match_frames, probe_aspect,
+from lecture2doc.segment import (Span, absorb_unmatched, build_spans, extract_frames, match_frames, probe_aspect,
                      slide_features, smooth, unmatched_seconds)
-from slides import load_slides
-from transcribe import transcribe_clips
+from lecture2doc.slides import load_slides
+from lecture2doc.transcribe import transcribe_clips
 
 log = logging.getLogger(__name__)
 

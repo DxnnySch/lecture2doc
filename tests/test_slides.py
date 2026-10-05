@@ -1,7 +1,7 @@
 import logging
 
 from helpers import make_pdf, make_pptx
-from slides import load_slides, read_pptx, render_pdf
+from lecture2doc.slides import load_slides, read_pptx, render_pdf
 
 
 def test_render_pdf(tmp_path):
@@ -86,7 +86,7 @@ def broken_pptx(tmp_path):
 
 
 def test_pdf_title_is_the_largest_top_text_not_the_footer(tmp_path):
-    from slides import pdf_titles
+    from lecture2doc.slides import pdf_titles
 
     pdf = make_deck_pdf(tmp_path / "d.pdf", [("Techniques for decision support", ["Alternatives", "Criteria"]),
                                              ("Second slide", ["point"])])
@@ -109,7 +109,7 @@ def test_count_mismatch_uses_pdf_titles_not_footer(tmp_path):
 
 def test_wrapped_title_is_joined_and_page_without_title_text_is_none(tmp_path):
     import pymupdf
-    from slides import pdf_titles
+    from lecture2doc.slides import pdf_titles
 
     doc = pymupdf.open()
     page = doc.new_page(width=960, height=540)
@@ -125,7 +125,7 @@ def test_wrapped_title_is_joined_and_page_without_title_text_is_none(tmp_path):
 
 def test_centered_title_slide_and_long_titles_are_truncated(tmp_path):
     import pymupdf
-    from slides import pdf_titles
+    from lecture2doc.slides import pdf_titles
 
     doc = pymupdf.open()
     page = doc.new_page(width=960, height=540)

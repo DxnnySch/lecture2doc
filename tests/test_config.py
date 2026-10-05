@@ -1,5 +1,5 @@
 import pytest
-from config import ConfigError, load_config
+from lecture2doc.config import ConfigError, load_config
 
 KEYS = ["SCADS_API_KEY", "SCADS_BASE_URL", "SCADS_STT_MODEL", "SCADS_LLM_MODEL", "SCADS_GLOSSARY_MODEL",
         "SCADS_REQUESTS_PER_MINUTE"]

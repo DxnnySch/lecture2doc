@@ -7,10 +7,10 @@ import httpx2
 import openai
 import pytest
 
-from audiocuts import Clip
-from config import Config
+from lecture2doc.audiocuts import Clip
+from lecture2doc.config import Config
 from helpers import make_wav
-from transcribe import extract_clip, transcribe_clips
+from lecture2doc.transcribe import extract_clip, transcribe_clips
 
 CFG = Config("k", "http://x", "alias-stt", "llm", "llm")
 
@@ -151,7 +151,7 @@ def test_a_media_file_that_cannot_be_cut_is_a_clear_error(tmp_path):
 def test_a_cache_that_cannot_be_saved_does_not_stop_the_transcription(tmp_path, audio, monkeypatch, caplog):
     import logging
 
-    import transcribe
+    from lecture2doc import transcribe
 
     def locked(path, data, **kwargs):
         raise PermissionError(13, "Zugriff verweigert")

@@ -1,5 +1,5 @@
 import pytest
-from api import retry_call
+from lecture2doc.api import retry_call
 
 
 def test_retries_then_succeeds():
@@ -35,8 +35,8 @@ def test_non_retryable_propagates_immediately():
 
 
 def test_make_client_disables_sdk_retries_and_sets_timeout():
-    from api import make_client
-    from config import Config
+    from lecture2doc.api import make_client
+    from lecture2doc.config import Config
 
     client = make_client(Config("k", "http://x/v1", "stt", "llm", "llm"))
     assert client.max_retries == 0
@@ -49,7 +49,7 @@ import time
 import httpx2
 import openai
 
-from api import RateLimiter
+from lecture2doc.api import RateLimiter
 
 
 def status_error(cls, status, headers=None):

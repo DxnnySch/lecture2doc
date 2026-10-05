@@ -13,8 +13,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from api import make_client, retry_call
-from fsutil import atomic_write_json
+from lecture2doc.api import make_client, retry_call
+from lecture2doc.fsutil import atomic_write_json
 
 log = logging.getLogger(__name__)
 

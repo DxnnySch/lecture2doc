@@ -5,9 +5,9 @@ from types import SimpleNamespace as NS
 
 from PIL import Image
 
-from cleanup import LLMCache, build_glossary, build_outline, cleanup_spans, guard, strip_think
-from segment import Span
-from slides import Slide
+from lecture2doc.cleanup import LLMCache, build_glossary, build_outline, cleanup_spans, guard, strip_think
+from lecture2doc.segment import Span
+from lecture2doc.slides import Slide
 
 
 def slides(n=3, text="Gradient descent. Backpropagation (BP)."):
@@ -277,7 +277,7 @@ def test_each_retry_attempt_counts_against_the_limiter():
         attempts.append(1)
         return openai.RateLimitError("slow down", response=httpx2.Response(429, request=httpx2.Request("POST", "http://x")), body=None) if len(attempts) < 3 else "The gradient descent works."
 
-    import api
+    from lecture2doc import api
     real_sleep = api.time.sleep
     api.time.sleep = lambda s: None  # do not really wait 15+30 s
     try:
