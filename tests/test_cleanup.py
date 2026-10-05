@@ -205,3 +205,39 @@ def test_cleanup_spans_preserves_order_with_workers():
     assert "slide 2" in out[1]
     assert "slide 3" in out[2]
     assert "slide 2" in out[3]
+
+
+def test_llm_cache_atomic_write_leaves_no_tmp_and_roundtrips(tmp_path):
+    path = tmp_path / "llm_cache.json"
+    cache = LLMCache(path)
+    cache.set("a", "one")
+    cache.set("b", "zwei ä")
+    assert [p.name for p in tmp_path.iterdir()] == ["llm_cache.json"]
+    assert LLMCache(path).get("b") == "zwei ä"
+
+
+def test_llm_cache_ignores_stray_tmp_file(tmp_path):
+    path = tmp_path / "llm_cache.json"
+    LLMCache(path).set("a", "one")
+    (tmp_path / "llm_cache.json.partial.tmp").write_text('{"a": "half', encoding="utf-8")
+    assert LLMCache(path).get("a") == "one"
+
+
+def test_llm_cache_failed_replace_keeps_old_file_and_cleans_tmp(tmp_path, monkeypatch):
+    import os
+
+    import pytest
+
+    path = tmp_path / "llm_cache.json"
+    cache = LLMCache(path)
+    cache.set("a", "one")
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError, match="disk full"):
+        cache.set("b", "two")
+    monkeypatch.undo()
+    assert [p.name for p in tmp_path.iterdir()] == ["llm_cache.json"]
+    assert LLMCache(path).get("b") is None and LLMCache(path).get("a") == "one"

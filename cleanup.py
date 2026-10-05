@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from api import retry_call
+from fsutil import atomic_write_json
 
 log = logging.getLogger(__name__)
 
@@ -55,8 +56,7 @@ class LLMCache:
         with self._lock:
             self._data[key] = value
             if self.path:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                self.path.write_text(json.dumps(self._data, ensure_ascii=False), encoding="utf-8")
+                atomic_write_json(self.path, self._data)
 
 
 def strip_think(text: str) -> str:
