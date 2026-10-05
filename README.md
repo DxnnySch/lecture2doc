@@ -57,12 +57,13 @@ If you did not activate the environment, call its Python directly instead: `.ven
 
 ## Using the interface
 
-The page has four numbered sections, top to bottom:
+The page has five numbered sections, top to bottom:
 
 1. **Folders.** Choose the folder with your slide PDFs, the folder with your videos, and where the Word files should go (Browse… opens a folder dialog, or paste a path). The choice is remembered for next time.
 2. **Glossary.** Press **Build glossary** once. It reads all PDFs in the slides folder and lists the technical terms, names and abbreviations of your course; the AI uses it to fix speech-recognition errors, which makes the transcripts much better. A counter shows how many PDFs are done. Processing is blocked until the glossary exists. Afterwards you can **Edit glossary** (see below). This section is hidden when the AI cleanup is switched off in section 4.
 3. **Lectures.** Every video in the folder is listed (in natural order) with the PDF it was matched to by file name (for example `week3.mp4` and `week3.pdf`). If the match is wrong or missing, pick the right PDF from the drop-down. Tick the lectures you want and press **Process selected**. They run one after the other. Each lecture shows a progress bar with the current step (finding the slides in the video, transcribing, cleaning up the text, writing the document), how far it is, and how long it has been running; the bar at the bottom shows how many lectures of the batch are finished. *Show details* lists remarks such as how many seconds of video matched each slide. **Stop** ends the run at the next step; finished work is kept. When a lecture is done, **Open Word file** opens the document, and **Open output folder** opens the folder with all of them.
 4. **Document options** (collapsed): AI cleanup on or off, thumbnails, time stamps, page breaks, grouping by slide, raw transcript, spoken language.
+5. **AI models** (collapsed): which of the models of the ScaDS.AI API may do which task (see below).
 
 ### Fixing mistakes: the glossary and re-running
 
@@ -106,20 +107,23 @@ Set these in `.env`:
 | `SCADS_API_KEY` | (required) | your ScaDS.AI API key |
 | `SCADS_BASE_URL` | `https://llm.scads.ai/v1` | API endpoint |
 | `SCADS_STT_MODEL` | `alias-stt` | speech-to-text model |
-| `SCADS_LLM_MODEL` | `auto` | model for the transcript cleanup. `auto` = the fastest of the powerful models for every request (see below); set a model name to always use that one |
-| `SCADS_GLOSSARY_MODEL` | same as `SCADS_LLM_MODEL` | model for the glossary step; same rule |
-| `SCADS_LLM_MODELS` | the four models below | the models `auto` chooses from, comma separated |
+| `SCADS_LLM_MODEL` | (not set) | model for the transcript cleanup. Not set = the four strong models below; a model name = only that one. Only the default: the choice in section 5 of the page wins |
+| `SCADS_GLOSSARY_MODEL` | same as `SCADS_LLM_MODEL` | the same for the glossary step |
+| `SCADS_LLM_MODELS` | the four models below | the default models when `SCADS_LLM_MODEL` is not set, comma separated |
 | `SCADS_REQUESTS_PER_MINUTE` | `25` | request cap per model; the gateway allowed 30 per key and model when this was written, lower it if your quota is smaller |
 
-### Automatic choice of the AI model
+### Choosing the AI models
 
-The ScaDS.AI gateway offers several strong models and their speed differs a lot (in a test between 0.8 s and 11 s for the same cleanup request). Unless you set `SCADS_LLM_MODEL`, lecture2doc handles this itself:
+The ScaDS.AI gateway offers many models and their speed differs a lot (in a test between 0.8 s and 11 s for the same cleanup request). In section 5 of the page you choose, **for each task separately**, which models you find suitable. The list comes straight from the API, so new models appear by themselves. The tasks are *Building the glossary*, *Correcting the text* and *Speech to text*.
 
-1. The API does not say how strong a model is, so the candidates are a short list of the most powerful chat models: `alias-huge-no-thinking`, `zai-org/GLM-5.3`, `MiniMaxAI/MiniMax-M3` and `openai/gpt-oss-120b` (change it with `SCADS_LLM_MODELS`). Models the API does not offer right now are dropped.
-2. At the start of a glossary build or a cleanup, all candidates get the same small test request in parallel (about 10 seconds). A model that fails it or answers wrongly is not used.
-3. Every following request goes to the model expected to answer first, based on its measured speed (kept up to date from the real answers) and on how many requests it is already working on, so busy models share the load. A model that returns an error or hits its rate limit is skipped for a minute and the next one answers.
+- **One model ticked:** only that model is used for the task.
+- **Several models ticked:** the fastest one answers each request, chosen dynamically:
+  1. At the start of a glossary build or a cleanup, the models get the same small test request in parallel (about 10 seconds). A model that fails it or answers wrongly is not used. For speech to text there is no such test (it would need real speech): each model is tried on a clip and the speed is learned from the real clips.
+  2. Every following request goes to the model expected to answer first, based on its measured speed (kept up to date from the real answers) and on how many requests it is already working on, so busy models share the load.
+  3. A model that returns an error, hits its rate limit or takes longer than two minutes is skipped for a minute and the next one answers.
+- Without a choice, the glossary and the text correction use the four strongest chat models (marked with a star): `alias-huge-no-thinking`, `zai-org/GLM-5.3`, `MiniMaxAI/MiniMax-M3` and `openai/gpt-oss-120b`, and speech to text uses `alias-stt`. The API says nothing about how strong a model is, so the star list is fixed in the code. A model named in `.env` (`SCADS_LLM_MODEL`, `SCADS_GLOSSARY_MODEL`, `SCADS_STT_MODEL`) is the default of its task until you choose in the page.
 
-The log under *Show details* lists the models by speed and how many requests each one answered. The speech-to-text model is not part of this (`SCADS_STT_MODEL`).
+The log under *Show details* lists the models by speed and how many requests each one answered. Models differ in quality, not only in speed: for text correction, look at the result of a lecture (*Also include the raw transcript* helps) before you tick a small model.
 
 The API client is the standard OpenAI one, so another OpenAI-compatible service may work by changing the base URL and model names. This is untested.
 
@@ -130,7 +134,7 @@ The API client is the standard OpenAI one, so another OpenAI-compatible service 
 | The page says to add your API key | create `.env` as described in step 3 of the setup, then reload the page |
 | `ffmpeg` not found | install it and make sure `ffmpeg -version` works in the same terminal |
 | A video has no PDF | the names are too different; choose the PDF in the drop-down of that lecture |
-| The AI always uses one model although you expect the automatic choice | remove or comment out `SCADS_LLM_MODEL` (and `SCADS_GLOSSARY_MODEL`) in `.env`: a model named there is always used |
+| The AI uses a different model than you expect | check section 5 of the page: a model you ticked there wins over `.env`, and one named in `.env` is the default until you tick something |
 | *Failed: ... open in Word* | the `.docx` is open in Word; close it and process the lecture again (nothing is transcribed twice) |
 | Wrong slide on some pages, or many unmatched seconds | tune `--threshold` and `--smooth` or correct `segments.json` on the command line (see below) |
 | HTTP 429 (rate limit) | retried automatically; if it keeps happening, lower `SCADS_REQUESTS_PER_MINUTE` |
@@ -193,9 +197,9 @@ Every video frame is compared with the PDF pages. Slides that are built up by an
 
 ## How the transcript is split between slides
 
-The lectures are recorded slide by slide, so at every slide change the audio has a silent gap between two recordings (in the sample lecture a median of 2.5 s, against 0.2 s for ordinary pauses). After matching, the tool finds these gaps with ffmpeg's silence detector and cuts the audio in the middle of the longest gap (at least 0.5 s) within 3 seconds of every slide change. The clips on either side of a gap keep only a quarter of a second of that silence (likewise silence at the very start and end of the recording), because speech-to-text models invent text such as "Thank you." for long silent stretches. Each stretch on one slide is transcribed separately, so a sentence can never be split between two slides and nothing depends on word timestamps (the speech-to-text service only estimates those, evenly spread over each phrase, so they can put words on the wrong side of a slide change).
+The lectures are recorded slide by slide, so at every slide change the audio has a silent gap between two recordings (in the sample lecture a median of 2.5 s, against 0.2 s for ordinary pauses). After matching, the tool finds these gaps with ffmpeg's silence detector and cuts the audio in the middle of the longest gap (at least 0.5 s) within 3 seconds of every slide change. The clips on either side of a gap keep only a quarter of a second of that silence (likewise silence at the very start and end of the recording). Each stretch on one slide is transcribed separately, so a sentence can never be split between two slides.
 
-If a slide change has no silent gap nearby, as in a lecture recorded in one go, that change is cut exactly at the detected slide change and the details say so: a word spoken right at such a change may then land on the neighbouring slide. A clip with less than half a second of speech is not sent to the speech-to-text service at all (silence makes the model invent text), and it gets an empty transcript.
+If a slide change has no silent gap nearby, as in a lecture recorded in one go, that change is cut exactly at the detected slide change and a word spoken right at such a change may then land on the neighbouring slide. A clip with less than half a second of speech is not sent to the speech-to-text service at all (silence makes the model invent text), and it gets an empty transcript.
 
 The speech-to-text requests share the `SCADS_REQUESTS_PER_MINUTE` quota with the LLM requests, and each finished clip is cached at once.
 

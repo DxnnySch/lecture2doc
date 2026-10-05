@@ -101,6 +101,17 @@
   .row { display: flex; gap: 8px; align-items: center; }
   .row > input { flex: 1; }
   .grow { flex: 1; }
+  .task { border-top: 1px solid var(--line); padding: 14px 0 4px; }
+  .task:first-of-type { border-top: 0; }
+  .task h4 { margin: 0 0 2px; font-size: 15px; }
+  .task .stage { margin-bottom: 8px; }
+  .modelgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 6px 14px; }
+  .modelgrid label { display: flex; gap: 8px; align-items: baseline; padding: 4px 8px; border-radius: 8px; border: 1px solid transparent; }
+  .modelgrid label:hover { background: var(--bg); }
+  .modelgrid label.on { border-color: var(--accent); background: var(--accent-soft); }
+  .modelgrid input { accent-color: var(--accent); }
+  .modelgrid small { color: var(--muted); }
+  .star { color: var(--warn); }
   .spinner { color: var(--muted); padding: 30px; text-align: center; }
   .spinner.busy::before { content: ""; display: block; width: 28px; height: 28px; margin: 0 auto 12px; border-radius: 50%;
                           border: 3px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
@@ -144,6 +155,13 @@
     <details class="options">
       <summary><span class="step">4</span>&nbsp; Document options</summary>
       <div class="optgrid" id="options"></div>
+    </details>
+  </section>
+  <section class="card">
+    <details class="options" id="models-details">
+      <summary><span class="step">5</span>&nbsp; AI models</summary>
+      <p class="stage" style="margin-top:12px">Choose which models may do each task. With <b>one</b> model ticked, only that one is used. With <b>several</b>, their response times are measured and the fastest one answers each request. <span class="star">★</span> marks the strongest models.</p>
+      <div id="model-tasks"><div class="spinner">Loading the list of models…</div></div>
     </details>
   </section>
 </main>
@@ -345,6 +363,54 @@ function render() {
 async function poll() { try { S = await api("/api/state"); if (pendingBuild && !S.glossary.building) S.glossary.building = true; render(); } catch (e) { $("total").textContent = "Lost connection to lecture2doc. Is it still running?"; } }
 poll(); setInterval(poll, 1000);
 
+/* ---------- AI models ---------- */
+const TASKS = [
+  ["glossary", "Building the glossary", "Reads all your slides once and lists the technical terms.", "chat"],
+  ["cleanup", "Correcting the text", "Fixes recognition errors in every transcript. Used for each lecture, so speed matters.", "chat"],
+  ["transcribe", "Speech to text", "Turns the audio of every slide into text.", "audio_transcription"],
+];
+let apiModels = null, modelsError = "";
+async function loadModels() {
+  try { apiModels = (await api("/api/models")).models; modelsError = ""; } catch (e) { modelsError = e.message; }
+  renderModels();
+}
+function selectedFor(task) { const own = S.settings.models[task]; return own && own.length ? own : (S.default_models[task] || []); }
+function renderModels() {
+  const host = $("model-tasks");
+  if (!S) return;
+  if (modelsError) {
+    const retry = el("button", { className: "small", textContent: "Try again" });
+    retry.addEventListener("click", loadModels);
+    host.replaceChildren(el("div", { className: "error-text", textContent: modelsError }), retry);
+    return;
+  }
+  if (!apiModels) return;
+  host.replaceChildren(...TASKS.map(([task, title, hint, mode]) => {
+    const chosen = selectedFor(task);
+    const offered = apiModels.filter((m) => m.mode === mode).sort((a, b) => (b.recommended - a.recommended) || a.id.localeCompare(b.id));
+    const ids = offered.map((m) => m.id);
+    const missing = chosen.filter((id) => !ids.includes(id));
+    const send = (list) => api("/api/models/select", { task, models: list }).then(poll).then(renderModels, fail);
+    const grid = el("div", { className: "modelgrid" });
+    for (const m of [...offered, ...missing.map((id) => ({ id, missing: true }))]) {
+      const box = el("input", { type: "checkbox", checked: chosen.includes(m.id) });
+      box.addEventListener("change", () => {
+        const now = box.checked ? [...chosen, m.id] : chosen.filter((x) => x !== m.id);
+        if (!now.length) { box.checked = true; return; }  // at least one model stays selected
+        send(now);
+      });
+      const label = el("label", { className: chosen.includes(m.id) ? "on" : "" }, box, el("span", {}, m.recommended ? el("span", { className: "star", textContent: "★ " }) : "", m.id,
+        m.missing ? el("small", { textContent: "  (not offered by the API any more)" }) : m.context ? el("small", { textContent: `  ${Math.round(m.context / 1000)}k context` }) : ""));
+      grid.append(label);
+    }
+    const reset = el("button", { className: "link", textContent: "Back to the default" });
+    reset.addEventListener("click", () => send([]));
+    const note = chosen.length === 1 ? `Only ${chosen[0]} is used.` : `${chosen.length} models: the fastest one answers each request.`;
+    return el("div", { className: "task" }, el("h4", { textContent: title }), el("div", { className: "stage", textContent: hint + " " + note }), grid, S.settings.models[task].length ? reset : "");
+  }));
+}
+$("models-details").addEventListener("toggle", () => { if ($("models-details").open && !apiModels) loadModels(); });
+
 /* ---------- glossary section ---------- */
 let gSig = "";
 let pendingBuild = false;
@@ -369,7 +435,7 @@ function renderGlossaryCard() {
     if (!S.settings.pdf_dir) {
       kids.push(el("p", { className: "stage", textContent: "Choose the slides folder above first." }));
     } else if (g.building) {
-      kids.push(el("div", { className: "spinner busy" }, el("div", { textContent: "Reading all PDFs and building the glossary… this takes a few minutes the first time and is saved afterwards." }), el("div", { className: "stage", id: "g-progress" })));
+      kids.push(el("div", { className: "spinner busy" }, el("div", { id: "g-phase", textContent: "Building the glossary…" }), el("div", { className: "stage", id: "g-progress" })));
     } else if (g.exists) {
       const edit = el("button", { textContent: "Edit glossary" });
       edit.addEventListener("click", openGlossary);
@@ -385,6 +451,7 @@ function renderGlossaryCard() {
   const prog = $("g-progress");
   if (prog && g.building) {
     const p = g.progress;
+    if ($("g-phase") && g.phase) $("g-phase").textContent = g.phase;
     prog.textContent = p.parts_total ? `${p.decks_done} of ${p.decks_total} PDFs processed · AI request ${p.parts_done} of ${p.parts_total} done` : p.decks_total ? `${p.decks_total} PDFs found, reading them…` : "Looking for PDFs…";
   }
 }

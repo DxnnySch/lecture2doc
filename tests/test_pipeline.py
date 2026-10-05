@@ -176,21 +176,20 @@ def test_cleanup_wiring(tmp_path, monkeypatch):
 
     def fake_glossary(client, model, slides, cache, limiter=None, on_progress=None):
         calls["glossary"] = (client, model)
-        calls["glossary_limiter"] = limiter
         return "GLOSS"
 
     def fake_cleanup(client, model, glossary, outline, slides, spans, raws, cache, limiter=None, on_progress=None):
         calls["cleanup"] = (client, model, glossary)
-        calls["cleanup_limiter"] = limiter
         return [f"CLEAN<{r}>" for r in raws]
 
     monkeypatch.setattr(pipeline, "build_glossary", fake_glossary)
     monkeypatch.setattr(pipeline, "cleanup_spans", fake_cleanup)
     out = run(video, pdf, tmp_path)
-    assert calls["glossary"] == (dummy, "glos-y")
-    assert calls["cleanup"] == (dummy, "llm-x", "GLOSS")
-    assert isinstance(calls["cleanup_limiter"], RateLimiter) and calls["cleanup_limiter"].max_calls == 7
-    assert calls["glossary_limiter"] is calls["cleanup_limiter"]  # one shared quota for both stages
+    glossary_client, cleanup_client = calls["glossary"][0], calls["cleanup"][0]
+    assert glossary_client.models == ["glos-y"] and glossary_client.client is dummy
+    assert cleanup_client.models == ["llm-x"] and cleanup_client.client is dummy  # one model named: only it is used
+    assert calls["glossary"][1] == calls["cleanup"][1] == "auto" and calls["cleanup"][2] == "GLOSS"
+    assert cleanup_client.limiters["llm-x"].max_calls == 7  # the quota applies per model
     texts = [p.text for p in Document(out).paragraphs]
     assert "CLEAN<world>" in texts and "world" not in texts
     seg = json.loads((tmp_path / "w" / "segments.json").read_text(encoding="utf-8"))
@@ -647,3 +646,17 @@ def test_make_glossary_refuses_a_folder_without_pdfs(tmp_path, monkeypatch):
     monkeypatch.setenv("SCADS_API_KEY", "dummy")
     with pytest.raises(pipeline.PipelineError, match="no readable PDF"):
         pipeline.make_glossary(tmp_path)
+
+
+def test_the_models_chosen_for_a_task_win_over_the_env_defaults(tmp_path):
+    from lecture2doc.config import load_config
+
+    env = tmp_path / ".env"
+    env.write_text("SCADS_API_KEY=k\nSCADS_LLM_MODEL=pinned\n")
+    cfg = load_config(env)
+    chosen = pipeline.Options(models={"cleanup": ["a", "b"], "glossary": []})
+    assert chosen.models_for("cleanup", cfg) == ["a", "b"]
+    assert chosen.models_for("glossary", cfg) == ["pinned"]       # nothing chosen: the .env says
+    assert chosen.models_for("transcribe", cfg) == ["alias-stt"]
+    env.write_text("SCADS_API_KEY=k\nSCADS_LLM_MODELS=x,y\n")
+    assert pipeline.Options().models_for("cleanup", load_config(env)) == ["x", "y"]

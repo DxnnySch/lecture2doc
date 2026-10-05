@@ -133,7 +133,7 @@ def test_the_glossary_is_one_file_in_the_slides_folder(app, tmp_path):
 
 
 def test_the_glossary_is_built_in_the_background_with_progress(app, tmp_path, monkeypatch):
-    def fake(folder, on_progress=None):
+    def fake(folder, on_progress=None, models=None, say=None):
         on_progress(1, 4, 2, 5)
         pipeline.save_glossary(folder, "term")
         return "term"
@@ -149,7 +149,7 @@ def test_the_glossary_is_built_in_the_background_with_progress(app, tmp_path, mo
 
 
 def test_a_failed_glossary_build_is_reported(app, monkeypatch):
-    def boom(folder, on_progress=None):
+    def boom(folder, on_progress=None, models=None, say=None):
         raise pipeline.PipelineError("the API key is wrong")
 
     monkeypatch.setattr(pipeline, "make_glossary", boom)
@@ -213,3 +213,55 @@ def test_unknown_videos_and_routes_are_rejected(server):
 def test_the_state_tells_whether_the_glossary_exists(server):
     state = json.loads(call(server, "/api/state")[1])
     assert state["glossary"]["exists"] is False and state["glossary"]["building"] is False
+
+
+def test_models_are_chosen_per_task_and_passed_on(app, monkeypatch):
+    assert app.settings["models"] == {"glossary": [], "cleanup": [], "transcribe": []}
+    app.set_models("cleanup", ["a", "b", "a"])
+    app.set_models("transcribe", ["w"])
+    with pytest.raises(pipeline.PipelineError, match="unknown task"):
+        app.set_models("nothing", ["a"])
+    with pytest.raises(pipeline.PipelineError, match="list of names"):
+        app.set_models("cleanup", "a")
+    row = app._row("one.mp4")
+    options = app._job(row).options
+    assert options.models == {"glossary": [], "cleanup": ["a", "b"], "transcribe": ["w"]}
+    seen = {}
+
+    def fake(folder, on_progress=None, models=None, say=None):
+        seen["models"] = models
+        say("Testing…")
+        pipeline.save_glossary(folder, "t")
+        return "t"
+
+    monkeypatch.setattr(pipeline, "make_glossary", fake)
+    app.set_models("glossary", ["g1", "g2"])
+    app.build_glossary()
+    end = time.time() + 5
+    while app.glossary_state()["building"] and time.time() < end:
+        time.sleep(0.02)
+    assert seen["models"] == ["g1", "g2"] and app.glossary_state()["phase"] == "Testing…"
+    again = ui.App(app.settings_file)
+    assert again.settings["models"]["cleanup"] == ["a", "b"]  # remembered
+
+
+def test_the_list_of_models_comes_from_the_api(app, tmp_path, monkeypatch):
+    listing = [type("M", (), {"id": i, "mode": m, "max_input_tokens": 1000})
+               for i, m in (("zai-org/GLM-5.3", "chat"), ("alias-stt", "audio_transcription"), ("flux", "image_generation"))]
+
+    class Client:
+        models = type("L", (), {"list": staticmethod(lambda: type("R", (), {"data": listing})())})()
+
+    import lecture2doc.api as api
+    from lecture2doc.config import load_config
+
+    env = tmp_path / ".env"  # not the developer's own .env
+    env.write_text("SCADS_API_KEY=k")
+    monkeypatch.setattr(ui, "load_config", lambda: load_config(env))
+
+    monkeypatch.setattr(api, "make_client", lambda cfg: Client())
+    models = app.api_models()
+    assert [m["id"] for m in models] == ["zai-org/GLM-5.3", "alias-stt"]  # only what the tasks can use
+    assert models[0]["recommended"] is True and models[1]["recommended"] is False
+    defaults = app.default_models()
+    assert defaults["transcribe"] == ["alias-stt"] and "zai-org/GLM-5.3" in defaults["cleanup"]

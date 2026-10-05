@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from lecture2doc.api import make_client, retry_call
+from lecture2doc.config import AUTO
 from lecture2doc.fsutil import atomic_write_json
 
 log = logging.getLogger(__name__)
@@ -36,8 +37,8 @@ def _transcribe(client, model: str, path, language: str | None, limiter) -> str:
     kwargs = {"language": language} if language else {}
 
     def call():
-        if limiter is not None:
-            limiter.wait()  # every attempt, including retries, counts against the quota
+        if limiter is not None and model != AUTO:
+            limiter.wait()  # every attempt, including retries, counts against the quota (AUTO: per model)
         with open(path, "rb") as f:
             return client.audio.transcriptions.create(model=model, file=f, response_format="verbose_json", **kwargs)
 
@@ -58,7 +59,7 @@ def _load_cache(path: Path, meta: dict) -> dict[str, str]:
 
 
 def transcribe_clips(cfg, media, clips, cache_path, language: str | None = None, client=None, limiter=None,
-                     workers: int = 4, on_progress=None) -> list[str]:
+                     workers: int = 4, on_progress=None, model: str | None = None) -> list[str]:
     """The text of every clip (a list as long as `clips`; "" for clips without speech).
 
     Finished clips are cached at once, so a failed or interrupted run only repeats the clips still missing. The
@@ -89,7 +90,7 @@ def transcribe_clips(cfg, media, clips, cache_path, language: str | None = None,
             try:
                 path = Path(tmp) / f"clip_{i}.mp3"
                 extract_clip(media, clips[i].start, clips[i].end, path)
-                text = _transcribe(client, cfg.stt_model, path, language, limiter)
+                text = _transcribe(client, model or cfg.stt_model, path, language, limiter)
             except BaseException as exc:  # reported once all workers have stopped
                 with lock:
                     errors.append(exc)

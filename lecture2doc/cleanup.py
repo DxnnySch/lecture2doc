@@ -101,8 +101,8 @@ def _chat(client, model: str, messages: list[dict], cache: LLMCache, limiter=Non
     return out
 
 
-def build_glossary(client, model: str, slides, cache: LLMCache, max_chars: int = 40000, limiter=None,
-                   on_progress=None, workers: int = 4) -> str:
+def build_glossary(client, model: str, slides, cache: LLMCache, max_chars: int = 12000, limiter=None,
+                   on_progress=None, workers: int = 8) -> str:
     """`on_progress(done, total, decks)` is called after every request: `decks` is how many different slide decks
     (slides with a `deck` attribute) the finished requests covered."""
     chunks, decks, current, current_decks, size = [], [], [], set(), 0

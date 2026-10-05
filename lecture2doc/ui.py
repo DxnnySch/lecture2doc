@@ -28,6 +28,8 @@ VIDEO_SUFFIXES = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"}
 PORTS = range(8765, 8785)
 STATIC = Path(__file__).parent / "ui_static"
 SETTINGS_FILE = Path.home() / ".lecture2doc" / "settings.json"
+TASKS = ("glossary", "cleanup", "transcribe")   # the tasks the user chooses AI models for
+MODELS_CACHE_SECONDS = 300
 OPTION_KEYS = {"cleanup": bool, "keep_raw": bool, "thumbnails": bool, "timestamps": bool, "page_breaks": bool,
                "group_by_slide": bool, "language": str}
 
@@ -91,12 +93,13 @@ class App:
     def __init__(self, settings_file: Path = SETTINGS_FILE):
         self.settings_file = settings_file
         self.lock = threading.RLock()
-        self.glossary_job = {"building": False, "error": None,
+        self.glossary_job = {"building": False, "error": None, "phase": "",
                              "progress": {"decks_done": 0, "decks_total": 0, "parts_done": 0, "parts_total": 0}}
         self.settings = {"pdf_dir": "", "video_dir": "", "out_dir": str(Path.cwd() / "output"),
                          "options": {"cleanup": True, "keep_raw": False, "thumbnails": True, "timestamps": True,
                                      "page_breaks": True, "group_by_slide": False, "language": ""},
-                         "pairs": {}}
+                         "pairs": {}, "models": {task: [] for task in TASKS}}  # [] = the default of the task
+        self._models_cache = (0.0, [])
         try:
             saved = json.loads(settings_file.read_text(encoding="utf-8"))
             self.settings.update({k: v for k, v in saved.items() if k in self.settings})
@@ -153,17 +156,58 @@ class App:
         with self.lock:
             job = dict(self.glossary_job)
         return {"exists": text is not None, "terms": len([ln for ln in (text or "").splitlines() if ln.strip()]),
-                "building": job["building"], "error": job["error"], "progress": job["progress"]}
+                "building": job["building"], "error": job["error"], "progress": job["progress"],
+                "phase": job.get("phase", "")}
 
     def state(self) -> dict:
         return {"settings": self.settings, "pdfs": list_files(self.settings["pdf_dir"], {".pdf"}),
-                "lectures": self.lectures(), "problem": self.problem(), "glossary": self.glossary_state()}
+                "lectures": self.lectures(), "problem": self.problem(), "glossary": self.glossary_state(),
+                "default_models": self.default_models()}
 
     # -- actions --------------------------------------------------------------------------------------------------
     def set_folders(self, body: dict) -> None:
         for key in ("pdf_dir", "video_dir", "out_dir"):
             if isinstance(body.get(key), str):
                 self.settings[key] = body[key].strip().strip('"')
+        self.save_settings()
+
+    def default_models(self) -> dict[str, list[str]]:
+        """What each task uses while the user has not chosen: the .env settings, else the powerful models."""
+        try:
+            cfg = load_config()
+            return {task: list(cfg.default_models(task)) for task in TASKS}
+        except ConfigError:
+            from lecture2doc.config import POWERFUL_MODELS
+
+            return {"glossary": list(POWERFUL_MODELS), "cleanup": list(POWERFUL_MODELS), "transcribe": ["alias-stt"]}
+
+    def api_models(self) -> list[dict]:
+        """Every model the API offers (cached for a few minutes): id, kind (chat / audio_transcription / ...),
+        context size and whether it is one of the recommended strong chat models."""
+        from lecture2doc.api import make_client
+        from lecture2doc.config import POWERFUL_MODELS
+
+        stamp, cached = self._models_cache
+        if cached and time.time() - stamp < MODELS_CACHE_SECONDS:
+            return cached
+        try:
+            data = make_client(load_config()).models.list().data
+        except ConfigError as exc:
+            raise pipeline.PipelineError(str(exc)) from None
+        except Exception as exc:
+            raise pipeline.PipelineError(f"cannot read the list of models from the API: {exc}") from None
+        models = [{"id": m.id, "mode": getattr(m, "mode", "chat"),
+                   "context": getattr(m, "max_input_tokens", None), "recommended": m.id in POWERFUL_MODELS}
+                  for m in data if getattr(m, "mode", "chat") in ("chat", "audio_transcription")]
+        self._models_cache = (time.time(), models)
+        return models
+
+    def set_models(self, task: str, models: list) -> None:
+        if task not in TASKS:
+            raise pipeline.PipelineError(f"unknown task {task}")
+        if not isinstance(models, list) or not all(isinstance(m, str) for m in models):
+            raise pipeline.PipelineError("models must be a list of names")
+        self.settings["models"][task] = list(dict.fromkeys(models))
         self.save_settings()
 
     def set_options(self, body: dict) -> None:
@@ -191,7 +235,7 @@ class App:
         video = Path(self.settings["video_dir"]) / row["video"]
         pdf = Path(self.settings["pdf_dir"]) / row["pdf"]
         return pipeline.Job(video, pdf, self.workdir(row["video"]), self.output(row["video"]),
-                            pipeline.Options(language=language, **opts))
+                            pipeline.Options(language=language, models=dict(self.settings["models"]), **opts))
 
     def enqueue(self, videos: list[str], rebuild: bool = False) -> None:
         if (not rebuild and self.settings["options"]["cleanup"]
@@ -257,7 +301,7 @@ class App:
         with self.lock:
             if self.glossary_job["building"]:
                 return
-            self.glossary_job = {"building": True, "error": None,
+            self.glossary_job = {"building": True, "error": None, "phase": "",
                                  "progress": {"decks_done": 0, "decks_total": 0, "parts_done": 0, "parts_total": 0}}
 
         def progress(decks_done: int, decks_total: int, parts_done: int, parts_total: int) -> None:
@@ -265,10 +309,15 @@ class App:
                 self.glossary_job["progress"] = {"decks_done": decks_done, "decks_total": decks_total,
                                                  "parts_done": parts_done, "parts_total": parts_total}
 
+        def phase(text: str) -> None:
+            with self.lock:
+                self.glossary_job["phase"] = text
+
         def work() -> None:
             error = None
             try:
-                pipeline.make_glossary(folder, on_progress=progress)
+                pipeline.make_glossary(folder, on_progress=progress, models=self.settings["models"]["glossary"] or None,
+                                       say=phase)
             except pipeline.PipelineError as exc:
                 error = str(exc)
             except Exception as exc:
@@ -357,6 +406,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, (STATIC / "index.html").read_bytes(), "text/html")
         if path == "/api/state":
             return self._json(self.app.state())
+        if path == "/api/models":
+            return self._guarded(lambda: {"models": self.app.api_models()})
         if path == "/api/glossary":
             return self._guarded(lambda: {"text": self.app.glossary_text()})
         self._json({"error": "not found"}, 404)
@@ -372,6 +423,7 @@ class Handler(BaseHTTPRequestHandler):
         routes = {
             "/api/folders": lambda: a.set_folders(body),
             "/api/options": lambda: a.set_options(body),
+            "/api/models/select": lambda: a.set_models(body["task"], body["models"]),
             "/api/pair": lambda: a.set_pair(body["video"], body["pdf"]),
             "/api/pick": lambda: {"path": pick_folder(a.settings.get(body.get("kind", ""), ""))},
             "/api/run": lambda: a.enqueue(body["videos"], bool(body.get("rebuild"))),

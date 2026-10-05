@@ -17,7 +17,7 @@ from lecture2doc.audiocuts import CutReport, detect_silences, plan_cuts
 from lecture2doc.cleanup import LLMCache, build_glossary, build_outline, cleanup_spans
 from lecture2doc.config import ConfigError, check_ffmpeg, load_config
 from lecture2doc.docx_out import SpanText, write_docx
-from lecture2doc.modelpick import llm_client
+from lecture2doc.modelpick import select_chat, select_transcription
 from lecture2doc.pagenumbers import (NumberEvidence, extract_strips, find_number_region, number_templates,
                                      numbers_from_strips)
 from lecture2doc.segment import (Span, absorb_unmatched, build_spans, extract_frames, match_frames, probe_aspect,
@@ -117,6 +117,11 @@ class Options:
     threshold: float = 0.6
     smooth: int = 5
     slide_numbers: bool = True
+    models: dict = field(default_factory=dict)  # per task ("glossary", "cleanup", "transcribe") the chosen models
+
+    def models_for(self, task: str, cfg) -> list[str]:
+        """The models chosen for a task; if none, what the .env says (or the powerful ones)."""
+        return list(self.models.get(task) or cfg.default_models(task))
 
 
 @dataclass
@@ -206,10 +211,13 @@ def folder_slides(folder) -> list[SimpleNamespace]:
     return slides
 
 
-def make_glossary(folder, client=None, cfg=None, cache=None, limiter=None, on_progress=None) -> str:
+def make_glossary(folder, cfg=None, cache=None, on_progress=None, models=None, say=lambda text: None,
+                  client=None, model=None) -> str:
     """Build the glossary from the slides of all PDFs in the folder and save it (that file is the cache).
-    `on_progress(decks_done, decks_total, parts_done, parts_total)` reports how many of the PDFs have been covered
-    and how many of the AI requests are finished."""
+    `models` are the models chosen for this task (default: see Config.default_models); one is used as it is, with
+    several the fastest answers each request. `on_progress(decks_done, decks_total, parts_done, parts_total)` reports
+    how many of the PDFs have been covered and how many of the AI requests are finished; `say` gets short remarks
+    about what is going on."""
     if cfg is None:
         try:
             cfg = load_config()  # no ffmpeg needed for this
@@ -218,22 +226,27 @@ def make_glossary(folder, client=None, cfg=None, cache=None, limiter=None, on_pr
     total = len(list(Path(folder).glob("*.pdf")))
     if on_progress is not None:
         on_progress(0, total, 0, 0)  # known at once: the page shows "N PDFs found" while they are being read
+    say(f"Reading {total} PDF{'s' if total != 1 else ''}…")
     slides = folder_slides(folder)
     if not slides:
         raise PipelineError(f"no readable PDF found in {folder}")
     total = len({s.deck for s in slides})
-    text = build_glossary(client or _llm(cfg), cfg.glossary_model, slides, cache or LLMCache(None),
-                          limiter=limiter or RateLimiter(cfg.requests_per_minute),
+    if client is None:
+        say("Testing the speed of the chosen AI models…")
+        client, model = _select(select_chat, make_client(cfg), models or cfg.default_models("glossary"),
+                                cfg.requests_per_minute, say, "Glossary models")
+    say("Asking the AI for the terms…")
+    text = build_glossary(client, model, slides, cache or LLMCache(None),
                           on_progress=(lambda done, n, decks: on_progress(decks, total, done, n))
                           if on_progress else None)
     save_glossary(folder, text)
     return text
 
 
-def _llm(cfg, say=lambda text: None):
-    """The client for the AI text requests; with the automatic model choice its speed ranking is measured first."""
+def _select(selector, *args):
+    """Run select_chat / select_transcription; problems become messages for the user."""
     try:
-        return llm_client(cfg, make_client(cfg), say)
+        return selector(*args)
     except (ValueError, RuntimeError) as exc:
         raise PipelineError(str(exc)) from None
     except openai.APIError as exc:
@@ -477,16 +490,17 @@ def run(job: Job, reporter: Reporter | None = None) -> Path:
     clips, cut_report = plan_cuts(spans, silences)
     for line in cut_summary(cut_report):
         reporter.log(line)
-    limiter = RateLimiter(cfg.requests_per_minute)  # one quota for the speech-to-text, glossary and cleanup requests
 
-    reporter.stage("transcribing", 0.0)
+    reporter.stage("transcribing", 0.0, "preparing the speech-to-text models")
+    stt, stt_model = _select(select_transcription, make_client(cfg), opts.models_for("transcribe", cfg),
+                             cfg.requests_per_minute, reporter.log)
 
     def stt_progress(done: int, total: int) -> None:
         reporter.stage("transcribing", done / total if total else 1.0, f"clip {done} of {total}")
 
     try:
-        raws = transcribe_clips(cfg, job.video, clips, job.workdir / "clips.json", opts.language, limiter=limiter,
-                                on_progress=stt_progress)
+        raws = transcribe_clips(cfg, job.video, clips, job.workdir / "clips.json", opts.language, client=stt,
+                                on_progress=stt_progress, model=stt_model)
     except RuntimeError as exc:
         raise PipelineError(str(exc)) from None
     except openai.APIError as exc:
@@ -495,13 +509,15 @@ def run(job: Job, reporter: Reporter | None = None) -> Path:
     if not opts.cleanup:
         cleans = raws
     else:
-        reporter.stage("cleanup", 0.0, "choosing the fastest AI model")
-        client = _llm(cfg, reporter.log)
+        reporter.stage("cleanup", 0.0, "testing the speed of the chosen AI models")
+        client, model = _select(select_chat, make_client(cfg), opts.models_for("cleanup", cfg),
+                                cfg.requests_per_minute, reporter.log, "Correction models")
         reporter.stage("cleanup", 0.0, "preparing the glossary")
         cache = LLMCache(job.workdir / "llm_cache.json")
         glossary = read_glossary(job.pdf.parent)
         if glossary is None:  # the first run builds it; edit it (in the UI or the file) and run again
-            glossary = make_glossary(job.pdf.parent, client, cfg, cache, limiter)
+            glossary = make_glossary(job.pdf.parent, cfg, cache, models=opts.models_for("glossary", cfg),
+                                     say=reporter.log)
         else:
             reporter.log("using the saved glossary")
         outline = build_outline(slides)
@@ -509,11 +525,10 @@ def run(job: Job, reporter: Reporter | None = None) -> Path:
         def clean_progress(done: int, total: int) -> None:
             reporter.stage("cleanup", 0.05 + 0.95 * (done / total if total else 1.0), f"part {done} of {total}")
 
-        cleans = cleanup_spans(client, cfg.llm_model, glossary, outline, slides, spans, raws, cache,
-                               limiter=limiter, on_progress=clean_progress)
-
-    if opts.cleanup and hasattr(client, "summary"):
-        reporter.log("AI requests per model: " + client.summary())
+        cleans = cleanup_spans(client, model, glossary, outline, slides, spans, raws, cache,
+                               on_progress=clean_progress)
+        reporter.log("Correction requests per model: " + client.summary())
+    reporter.log("Speech-to-text requests per model: " + stt.summary())
 
     (job.workdir / "segments.json").write_text(json.dumps({
         "video": str(job.video),

@@ -34,6 +34,14 @@ class Config:
     requests_per_minute: int = 25  # below the gateway's observed 30/min per key and model
     llm_models: tuple[str, ...] = POWERFUL_MODELS  # what AUTO chooses from
 
+    def default_models(self, task: str) -> tuple[str, ...]:
+        """The models a task uses when the user has not chosen any: what the .env says, else the powerful ones.
+        Tasks: "glossary", "cleanup" (both chat models) and "transcribe" (speech to text)."""
+        if task == "transcribe":
+            return (self.stt_model,)
+        model = self.glossary_model if task == "glossary" else self.llm_model
+        return self.llm_models if model == AUTO else (model,)
+
     def __repr__(self) -> str:  # never expose the key
         return f"Config(base_url={self.base_url!r}, stt_model={self.stt_model!r}, llm_model={self.llm_model!r})"
 
