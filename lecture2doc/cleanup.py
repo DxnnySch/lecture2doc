@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from lecture2doc.api import retry_call
@@ -101,7 +101,7 @@ def _chat(client, model: str, messages: list[dict], cache: LLMCache, limiter=Non
 
 
 def build_glossary(client, model: str, slides, cache: LLMCache, max_chars: int = 40000, limiter=None,
-                   on_progress=None) -> str:
+                   on_progress=None, workers: int = 4) -> str:
     """`on_progress(done, total, decks)` is called after every request: `decks` is how many different slide decks
     (slides with a `deck` attribute) the finished requests covered."""
     chunks, decks, current, current_decks, size = [], [], [], set(), 0
@@ -117,22 +117,30 @@ def build_glossary(client, model: str, slides, cache: LLMCache, max_chars: int =
     if current:
         chunks.append("".join(current))
         decks.append(current_decks)
-    seen: dict[str, str] = {}
-    covered: set = set()
-    for i, chunk in enumerate(chunks):
+    def extract(chunk: str) -> str:
         try:
-            reply = _chat(client, model, [{"role": "system", "content": GLOSSARY_SYSTEM},
-                                          {"role": "user", "content": chunk}], cache, limiter)
+            return _chat(client, model, [{"role": "system", "content": GLOSSARY_SYSTEM},
+                                         {"role": "user", "content": chunk}], cache, limiter)
         except Exception as exc:
             log.warning("build_glossary chunk extraction failed: %s", exc)
-            reply = ""
+            return ""
+
+    replies: list[str] = [""] * len(chunks)
+    covered: set = set()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(extract, chunk): i for i, chunk in enumerate(chunks)}
+        for done, future in enumerate(as_completed(futures), 1):
+            i = futures[future]
+            replies[i] = future.result()
+            covered |= decks[i]
+            if on_progress is not None:
+                on_progress(done, len(chunks), len(covered - {None}))
+    seen: dict[str, str] = {}
+    for reply in replies:  # in slide order, so the result does not depend on which request finished first
         for line in reply.splitlines():
             term = re.sub(r"^\s*[-*•\d.)]+\s*", "", line).strip()
             if term:
                 seen.setdefault(term.lower(), term)
-        covered |= decks[i]
-        if on_progress is not None:
-            on_progress(i + 1, len(chunks), len(covered - {None}))
     return "\n".join(list(seen.values())[:MAX_GLOSSARY_LINES])
 
 

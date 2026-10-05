@@ -128,8 +128,13 @@
       <div class="note">Each video is matched with the PDF of the same name. You can change the match per lecture below.</div></div>
   </section>
 
+  <section class="card" id="glossary-card">
+    <h2><span class="step">2</span> Glossary <span class="hint">built from all PDFs in the slides folder</span></h2>
+    <div id="g-status"></div>
+  </section>
+
   <section class="card">
-    <h2><span class="step">2</span> Lectures <span class="hint" id="found"></span></h2>
+    <h2><span class="step">3</span> Lectures <span class="hint" id="found"></span></h2>
     <div class="toolbar"><label><input type="checkbox" id="all"> Select all</label><span class="grow"></span>
       <button class="small" id="open-out">Open output folder</button></div>
     <div id="lectures"></div>
@@ -137,7 +142,7 @@
 
   <section class="card">
     <details class="options">
-      <summary><span class="step">3</span>&nbsp; Document options</summary>
+      <summary><span class="step">4</span>&nbsp; Document options</summary>
       <div class="optgrid" id="options"></div>
     </details>
   </section>
@@ -151,14 +156,13 @@
 
 <dialog id="glossary">
   <div class="dlg">
-    <h3>Glossary: <span id="g-title"></span></h3>
+    <h3>Edit the glossary</h3>
     <p>Terms from the slides that the AI uses to fix recognition errors in the transcript. Remove wrong ones, correct spellings, add missing names. It is shared by all lectures in the slides folder, so add abbreviations and names that come up in several lectures even if they are not on the slides. Changes apply the next time you process a lecture.</p>
     <div class="row"><input type="text" id="g-filter" placeholder="Filter terms…"><span id="g-count" class="stage"></span></div>
     <div class="terms" id="g-terms"></div>
     <div class="row"><input type="text" id="g-new" placeholder="Add a term and press Enter"><button id="g-add">Add</button></div>
     <div class="error-text" id="g-error"></div>
-    <div class="row"><button class="small link" id="g-regen" title="Builds the glossary again from the slides and replaces your list">Rebuild from slides</button>
-      <span class="grow"></span><button id="g-cancel">Cancel</button><button class="primary" id="g-save">Save glossary</button></div>
+    <div class="row"><span class="grow"></span><button id="g-cancel">Cancel</button><button class="primary" id="g-save">Save glossary</button></div>
   </div>
 </dialog>
 
@@ -236,15 +240,13 @@ function buildLectures() {
     const pdfrow = el("div", { className: "pdfrow" + (L.pdf ? "" : " missing") }, "Slides:", sel);
     const status = el("div", { className: "statuscell" });
     status.dataset.video = L.video;
-    const gloss = el("button", { className: "small", textContent: "Glossary", title: "View and edit the glossary shared by all lectures" });
-    gloss.addEventListener("click", () => openGlossary(L.video));
     const docx = el("button", { className: "small", textContent: "Open Word file" });
     docx.addEventListener("click", () => api("/api/open", { kind: "file", video: L.video }).catch(fail));
     const redo = el("button", { className: "small", textContent: "Rebuild file", title: "Apply changed document options without transcribing again" });
     redo.addEventListener("click", () => api("/api/run", { videos: [L.video], rebuild: true }).then(poll, fail));
     const reset = el("button", { className: "small link", textContent: "Start over", title: "Forget all saved results of this lecture" });
-    reset.addEventListener("click", () => { if (confirm("Delete the saved transcript and caches of this lecture? The next run starts from scratch. (The shared glossary is kept.)")) api("/api/reset", { video: L.video }).then(poll, fail); });
-    const actions = el("div", { className: "actions" }, gloss, docx, redo, reset);
+    reset.addEventListener("click", () => { if (confirm("Delete the saved transcript and caches of this lecture? The next run starts from scratch. (The glossary is kept.)")) api("/api/reset", { video: L.video }).then(poll, fail); });
+    const actions = el("div", { className: "actions" }, docx, redo, reset);
     actions.dataset.video = L.video;
     const log = el("div", { className: "log" });
     log.dataset.video = L.video;
@@ -284,11 +286,10 @@ function updateLectures() {
     status.replaceChildren(...kids);
     log.style.display = open.has(L.video) && (j.log || []).length ? "block" : "none";
     log.textContent = (j.log || []).join("\n");
-    const [gloss, docx, redo, reset] = actions.children;
-    gloss.disabled = !L.pdf;
+    const [docx, redo, reset] = actions.children;
     docx.hidden = !L.docx;
     redo.hidden = !(L.has_segments && L.docx);
-    reset.hidden = !(L.has_segments || L.has_glossary || j.status !== "idle");
+    reset.hidden = !(L.has_segments || j.status !== "idle");
     redo.disabled = reset.disabled = busy;
   }
   refreshFooter();
@@ -300,7 +301,8 @@ function refreshFooter() {
   const noPdf = S.lectures.filter((L) => selected.has(L.video) && !L.pdf).length;
   const again = ready.some((L) => L.docx || L.has_segments);
   $("go").textContent = busy.length ? "Add to queue" : again ? "Process selected (resume / redo)" : "Process selected";
-  $("go").disabled = !ready.length || !!S.problem;
+  const needGlossary = S.settings.options.cleanup && !S.glossary.exists;
+  $("go").disabled = !ready.length || !!S.problem || needGlossary;
   $("stop").hidden = !busy.length;
   let text = "";
   if (busy.length) {
@@ -310,6 +312,7 @@ function refreshFooter() {
     text = `${finished} of ${batch} lecture${batch > 1 ? "s" : ""} finished · ${Math.round(100 * (sum + finished) / batch)}% overall`;
   } else if (selected.size) text = `${ready.length} selected` + (noPdf ? ` · ${noPdf} without slides` : "");
   else text = "Tick the lectures you want to process.";
+  if (needGlossary && !busy.length) text = "Build the glossary first (section 2).";
   $("total").textContent = text;
   const all = S.lectures.length && S.lectures.every((L) => selected.has(L.video));
   $("all").checked = !!all;
@@ -335,33 +338,56 @@ function render() {
   }
   const sig = JSON.stringify([S.lectures.map((L) => [L.video, L.pdf]), S.pdfs, s.video_dir]);
   if (sig !== signature) { signature = sig; buildLectures(); }
+  renderGlossaryCard();
   $("found").textContent = S.lectures.length ? `${S.lectures.length} video${S.lectures.length > 1 ? "s" : ""} found` : "";
   updateLectures();
 }
 async function poll() { try { S = await api("/api/state"); render(); } catch (e) { $("total").textContent = "Lost connection to lecture2doc. Is it still running?"; } }
 poll(); setInterval(poll, 1000);
 
-/* ---------- glossary editor ---------- */
-let terms = [], gVideo = null;
-let progressTimer = null;
-const busy = (text, building = false) => {
-  const box = el("div", { className: "spinner busy" }, el("div", { textContent: text }), el("div", { className: "stage", id: "g-progress" }));
-  $("g-terms").replaceChildren(box);
-  ["g-save", "g-regen", "g-add"].forEach((id) => ($(id).disabled = true));
-  clearInterval(progressTimer);
-  if (building) {
-    const tick = async () => {
-      try {
-        const p = await api("/api/glossary/progress");
-        if ($("g-progress") && p.decks_total) $("g-progress").textContent = `${p.decks_done} of ${p.decks_total} PDFs processed`;
-      } catch (e) { /* the build request reports real errors */ }
+/* ---------- glossary section ---------- */
+let gSig = "";
+function renderGlossaryCard() {
+  const g = S.glossary;
+  $("glossary-card").hidden = !S.settings.options.cleanup;
+  const sig = JSON.stringify([g.building, g.exists, g.terms, g.error, S.settings.pdf_dir, S.pdfs.length]);
+  if (sig !== gSig) {
+    gSig = sig;
+    const kids = [];
+    const build = (label, primary) => {
+      const b = el("button", { className: primary ? "primary" : "", textContent: label });
+      b.addEventListener("click", () => {
+        if (g.exists && !confirm("Rebuild the glossary from the slides of all PDFs in the folder? Your edits are lost.")) return;
+        api("/api/glossary/build", {}).then(poll, fail);
+      });
+      return b;
     };
-    tick(); progressTimer = setInterval(tick, 700);
+    if (!S.settings.pdf_dir) {
+      kids.push(el("p", { className: "stage", textContent: "Choose the slides folder above first." }));
+    } else if (g.building) {
+      kids.push(el("div", { className: "spinner busy" }, el("div", { textContent: "Reading all PDFs and building the glossary… this takes a few minutes the first time and is saved afterwards." }), el("div", { className: "stage", id: "g-progress" })));
+    } else if (g.exists) {
+      const edit = el("button", { textContent: "Edit glossary" });
+      edit.addEventListener("click", openGlossary);
+      kids.push(el("div", { className: "row" }, el("span", { className: "pill done", textContent: "Ready" }), el("span", { textContent: `${g.terms} terms. Shared by all lectures in this folder.` }), el("span", { className: "grow" }), edit, build("Rebuild from slides", false)));
+    } else {
+      kids.push(el("p", {}, "The glossary lists the technical terms, names and abbreviations of your course. The AI uses it to fix speech-recognition errors, so ", el("b", { textContent: "build it once from all your slides" }), ` (${S.pdfs.length} PDF${S.pdfs.length === 1 ? "" : "s"} found) before processing. Afterwards you can edit it and add terms that are not on the slides.`));
+      if (g.error) kids.push(el("div", { className: "error-text", textContent: g.error }));
+      kids.push(el("div", { className: "row" }, build("Build glossary", true), el("span", { className: "stage", textContent: S.pdfs.length ? "" : "No PDFs in the slides folder." })));
+      kids[kids.length - 1].querySelector("button").disabled = !S.pdfs.length;
+    }
+    $("g-status").replaceChildren(...kids);
   }
-};
-const ready = () => { clearInterval(progressTimer); ["g-save", "g-regen", "g-add"].forEach((id) => ($(id).disabled = false)); };
+  const prog = $("g-progress");
+  if (prog && g.building) {
+    const p = g.progress;
+    prog.textContent = p.parts_total ? `${p.decks_done} of ${p.decks_total} PDFs processed · AI request ${p.parts_done} of ${p.parts_total} done` : p.decks_total ? `${p.decks_total} PDFs found, reading them…` : "Looking for PDFs…";
+  }
+}
+
+/* ---------- glossary editor ---------- */
+let terms = [];
 function renderTerms() {
-  ready();
   const q = $("g-filter").value.trim().toLowerCase();
   const host = $("g-terms");
   host.replaceChildren();
@@ -376,14 +402,12 @@ function renderTerms() {
   if (!host.children.length) host.append(el("div", { className: "spinner", textContent: terms.length ? "No term matches the filter." : "The glossary is empty." }));
   $("g-count").textContent = `${terms.filter((t) => t.trim()).length} terms`;
 }
-function setTerms(text) { terms = text.split("\n").map((t) => t.trim()).filter(Boolean); $("g-filter").value = ""; renderTerms(); }
-async function openGlossary(video) {
-  const L = S.lectures.find((x) => x.video === video);
-  gVideo = video; $("g-title").textContent = S.settings.pdf_dir.split(/[\\/]/).filter(Boolean).pop() || "slides folder"; $("g-error").textContent = "";
-  terms = []; busy(L && L.has_glossary ? "Loading the glossary…" : "Reading all the slides in the folder and building the glossary… (the first time takes a minute or so, then it is saved)", !(L && L.has_glossary));
+async function openGlossary() {
+  $("g-error").textContent = ""; $("g-filter").value = ""; terms = [];
+  $("g-terms").replaceChildren(el("div", { className: "spinner busy", textContent: "Loading the glossary…" }));
   $("glossary").showModal();
-  try { setTerms((await api("/api/glossary?video=" + encodeURIComponent(video))).text); }
-  catch (e) { $("g-terms").replaceChildren(); $("g-error").textContent = e.message; ready(); $("g-save").disabled = true; }
+  try { terms = (await api("/api/glossary")).text.split("\n").map((t) => t.trim()).filter(Boolean); renderTerms(); }
+  catch (e) { $("g-terms").replaceChildren(); $("g-error").textContent = e.message; }
 }
 function addTerm() {
   const v = $("g-new").value.trim();
@@ -394,13 +418,8 @@ $("g-add").addEventListener("click", addTerm);
 $("g-new").addEventListener("keydown", (e) => { if (e.key === "Enter") addTerm(); });
 $("g-filter").addEventListener("input", renderTerms);
 $("g-cancel").addEventListener("click", () => $("glossary").close());
-$("g-regen").addEventListener("click", async () => {
-  if (!confirm("Rebuild the list from the slides of all PDFs in the folder? Your edits are lost.")) return;
-  $("g-error").textContent = ""; busy("Building the glossary…", true);
-  try { setTerms((await api("/api/glossary/generate", { video: gVideo })).text); } catch (e) { $("g-error").textContent = e.message; renderTerms(); }
-});
 $("g-save").addEventListener("click", async () => {
-  try { await api("/api/glossary/save", { video: gVideo, text: terms.join("\n") }); $("glossary").close(); poll(); } catch (e) { $("g-error").textContent = e.message; }
+  try { await api("/api/glossary/save", { text: terms.join("\n") }); $("glossary").close(); poll(); } catch (e) { $("g-error").textContent = e.message; }
 });
 </script>
 </body>

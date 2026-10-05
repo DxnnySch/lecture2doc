@@ -132,57 +132,69 @@ class Job:
 
 # --- glossary ---------------------------------------------------------------------------------------------------
 
-def glossary_path(pdf) -> Path:
+def glossary_path(folder) -> Path:
     """One glossary per folder of slide PDFs: the terms and abbreviations of a course are used across its lectures."""
-    return Path(pdf).parent / GLOSSARY_DIR / GLOSSARY_FILE
+    return Path(folder) / GLOSSARY_DIR / GLOSSARY_FILE
 
 
-def read_glossary(pdf) -> str | None:
-    """The saved (possibly hand-edited) glossary of the PDF's folder, one term per line; None if there is none."""
+def read_glossary(folder) -> str | None:
+    """The saved (possibly hand-edited) glossary of a slides folder, one term per line; None if there is none."""
     try:
-        return glossary_path(pdf).read_text(encoding="utf-8")
+        return glossary_path(folder).read_text(encoding="utf-8")
     except OSError:
         return None
 
 
-def save_glossary(pdf, text: str) -> None:
-    path = glossary_path(pdf)
+def save_glossary(folder, text: str) -> None:
+    path = glossary_path(folder)
     path.parent.mkdir(parents=True, exist_ok=True)
     terms = [line.strip() for line in text.splitlines() if line.strip()]
     path.write_text("\n".join(terms) + ("\n" if terms else ""), encoding="utf-8")
 
 
-def folder_slides(pdf) -> list[SimpleNamespace]:
-    """The text of every slide of every PDF in the folder of `pdf` (what the glossary is built from)."""
-    slides = []
-    for path in sorted(Path(pdf).parent.glob("*.pdf"), key=lambda p: p.name.lower()):
+def folder_slides(folder) -> list[SimpleNamespace]:
+    """The text of every slide of every PDF in the folder (what the glossary is built from).
+
+    A line that was already seen on an earlier slide (footers, repeated headings, agendas) is left out: the glossary
+    only needs every term once, and a folder of decks is large."""
+    slides, seen = [], set()
+    for path in sorted(Path(folder).glob("*.pdf"), key=lambda p: p.name.lower()):
         try:
             pages = pdf_pages(path)
         except Exception as exc:  # an unreadable PDF must not block the others
             log.warning("skipping %s for the glossary (%s)", path.name, exc)
             continue
         for number, (title, text) in enumerate(pages, 1):
-            slides.append(SimpleNamespace(number=number, title=f"{path.stem}: {title or 'untitled'}", text=text,
-                                          deck=path.name))
+            lines = []
+            for line in (raw.strip() for raw in text.splitlines()):
+                if len(line) > 2 and line not in seen:  # page numbers and bullets alone say nothing
+                    seen.add(line)
+                    lines.append(line)
+            slides.append(SimpleNamespace(number=number, title=f"{path.stem}: {title or 'untitled'}",
+                                          text="\n".join(lines), deck=path.name))
     return slides
 
 
-def make_glossary(pdf, client=None, cfg=None, cache=None, limiter=None, on_progress=None) -> str:
+def make_glossary(folder, client=None, cfg=None, cache=None, limiter=None, on_progress=None) -> str:
     """Build the glossary from the slides of all PDFs in the folder and save it (that file is the cache).
-    `on_progress(decks_done, decks_total)` reports how many of the PDFs have been covered."""
+    `on_progress(decks_done, decks_total, parts_done, parts_total)` reports how many of the PDFs have been covered
+    and how many of the AI requests are finished."""
     if cfg is None:
         try:
             cfg = load_config()  # no ffmpeg needed for this
         except ConfigError as exc:
             raise PipelineError(str(exc)) from None
-    slides = folder_slides(pdf)
+    slides = folder_slides(folder)
+    if not slides:
+        raise PipelineError(f"no readable PDF found in {folder}")
     total = len({s.deck for s in slides})
     if on_progress is not None:
-        on_progress(0, total)
+        on_progress(0, total, 0, 0)
     text = build_glossary(client or make_client(cfg), cfg.glossary_model, slides, cache or LLMCache(None),
                           limiter=limiter or RateLimiter(cfg.requests_per_minute),
-                          on_progress=(lambda done, n, decks: on_progress(decks, total)) if on_progress else None)
-    save_glossary(pdf, text)
+                          on_progress=(lambda done, n, decks: on_progress(decks, total, done, n))
+                          if on_progress else None)
+    save_glossary(folder, text)
     return text
 
 
@@ -444,9 +456,9 @@ def run(job: Job, reporter: Reporter | None = None) -> Path:
         reporter.stage("cleanup", 0.0, "preparing the glossary")
         client = make_client(cfg)
         cache = LLMCache(job.workdir / "llm_cache.json")
-        glossary = read_glossary(job.pdf)
+        glossary = read_glossary(job.pdf.parent)
         if glossary is None:  # the first run builds it; edit it (in the UI or the file) and run again
-            glossary = make_glossary(job.pdf, client, cfg, cache, limiter)
+            glossary = make_glossary(job.pdf.parent, client, cfg, cache, limiter)
         else:
             reporter.log("using the saved glossary")
         outline = build_outline(slides)

@@ -57,22 +57,21 @@ If you did not activate the environment, call its Python directly instead: `.ven
 
 ## Using the interface
 
+The page has four numbered sections, top to bottom:
+
 1. **Folders.** Choose the folder with your slide PDFs, the folder with your videos, and where the Word files should go (Browse… opens a folder dialog, or paste a path). The choice is remembered for next time.
-2. **Lectures.** Every video in the folder is listed with the PDF it was matched to by file name (for example `week3.mp4` and `week3.pdf`). If the match is wrong or missing, pick the right PDF from the drop-down. Tick the lectures you want and press **Process selected**. They run one after the other.
-3. **Progress.** Each lecture shows a progress bar with the current step (finding the slides in the video, transcribing, cleaning up the text, writing the document), how far it is, and how long it has been running. *Show details* lists remarks such as how many seconds of video matched each slide. **Stop** ends the run at the next step; finished work is kept.
-4. **Result.** When a lecture is done, **Open Word file** opens the document. **Open output folder** opens the folder with all of them.
-5. **Document options** (collapsed under the lectures): AI cleanup on or off, thumbnails, time stamps, page breaks, grouping by slide, raw transcript, spoken language.
+2. **Glossary.** Press **Build glossary** once. It reads all PDFs in the slides folder and lists the technical terms, names and abbreviations of your course; the AI uses it to fix speech-recognition errors, which makes the transcripts much better. A counter shows how many PDFs are done. Processing is blocked until the glossary exists. Afterwards you can **Edit glossary** (see below). This section is hidden when the AI cleanup is switched off in section 4.
+3. **Lectures.** Every video in the folder is listed (in natural order) with the PDF it was matched to by file name (for example `week3.mp4` and `week3.pdf`). If the match is wrong or missing, pick the right PDF from the drop-down. Tick the lectures you want and press **Process selected**. They run one after the other. Each lecture shows a progress bar with the current step (finding the slides in the video, transcribing, cleaning up the text, writing the document), how far it is, and how long it has been running; the bar at the bottom shows how many lectures of the batch are finished. *Show details* lists remarks such as how many seconds of video matched each slide. **Stop** ends the run at the next step; finished work is kept. When a lecture is done, **Open Word file** opens the document, and **Open output folder** opens the folder with all of them.
+4. **Document options** (collapsed): AI cleanup on or off, thumbnails, time stamps, page breaks, grouping by slide, raw transcript, spoken language.
 
 ### Fixing mistakes: the glossary and re-running
 
-The AI cleanup fixes speech-recognition errors with the help of a glossary: the terms, names and acronyms of your course. Technical terms are exactly what speech recognition gets wrong, so a good glossary gives a better transcript.
+There is **one glossary for the whole slides folder**, shared by all lectures: terms and abbreviations from one lecture are often used in another, also where they are not on the slide. Technical terms are exactly what speech recognition gets wrong, so a good glossary gives a better transcript.
 
-There is **one glossary for the whole slides folder**, shared by all lectures: terms and abbreviations from one lecture are often used in another, also where they are not on the slide. The first time it is built from the text of all PDFs in the folder.
-
-- Press **Glossary** on a lecture. The first time, it is built from the slide text of all PDFs in the folder (about a minute); a counter shows how many PDFs are done. Then you can **edit** any term, **remove** wrong ones with ✕, **add** missing ones (type and press Enter), and filter the list. **Save glossary** stores it in the slides folder (`.lecture2doc/glossary.txt`), so it is built only once. Add abbreviations and names the lecturer says but the slides do not show. *Rebuild from slides* starts over from the PDFs and replaces your edits (for example after you add new PDFs to the folder).
+- **Edit glossary** opens the list: **edit** any term, **remove** wrong ones with ✕, **add** missing ones (type and press Enter, for example an abbreviation the lecturer says but the slides do not show), and filter the list. **Save glossary** stores it in the slides folder (`.lecture2doc/glossary.txt`). *Rebuild from slides* starts over from the PDFs and replaces your edits (for example after you add new PDFs to the folder).
 - Press **Process selected** again. Nothing that is already done is repeated: the slide matching and the speech-to-text are kept, and only the AI cleanup runs again with your glossary. A rerun after a glossary edit therefore takes only as long as the cleanup step instead of a full run.
 - Changed only a document option (thumbnails, time stamps, ...)? Use **Rebuild file**: the document is made again from the saved transcript in seconds, without video or internet.
-- **Start over** deletes everything saved for a lecture (transcript and caches) so the next run begins from scratch. The shared glossary is kept.
+- **Start over** deletes everything saved for a lecture (transcript and caches) so the next run begins from scratch. The glossary is kept.
 
 An interrupted or failed run (closed browser, lost connection, rate limit) also continues where it stopped when you press **Process selected** again.
 

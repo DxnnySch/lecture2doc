@@ -91,8 +91,8 @@ class App:
     def __init__(self, settings_file: Path = SETTINGS_FILE):
         self.settings_file = settings_file
         self.lock = threading.RLock()
-        self.glossary_progress = {"decks_done": 0, "decks_total": 0}
-        self.glossary_lock = threading.Lock()  # building a glossary takes seconds; keep it apart from the state lock
+        self.glossary_job = {"building": False, "error": None,
+                             "progress": {"decks_done": 0, "decks_total": 0, "parts_done": 0, "parts_total": 0}}
         self.settings = {"pdf_dir": "", "video_dir": "", "out_dir": str(Path.cwd() / "output"),
                          "options": {"cleanup": True, "keep_raw": False, "thumbnails": True, "timestamps": True,
                                      "page_breaks": True, "group_by_slide": False, "language": ""},
@@ -144,14 +144,20 @@ class App:
                     job["elapsed"] = round(time.time() - job["started"])
                 job.pop("started", None)
             rows.append({"video": video, "pdf": pdf, "job": job,
-                         "has_glossary": bool(pdf) and pipeline.glossary_path(self._pdf_path(pdf)).is_file(),
                          "has_segments": (work / "segments.json").is_file(),
                          "docx": self.output(video).is_file()})
         return rows
 
+    def glossary_state(self) -> dict:
+        text = pipeline.read_glossary(self.settings["pdf_dir"]) if self.settings["pdf_dir"] else None
+        with self.lock:
+            job = dict(self.glossary_job)
+        return {"exists": text is not None, "terms": len([ln for ln in (text or "").splitlines() if ln.strip()]),
+                "building": job["building"], "error": job["error"], "progress": job["progress"]}
+
     def state(self) -> dict:
         return {"settings": self.settings, "pdfs": list_files(self.settings["pdf_dir"], {".pdf"}),
-                "lectures": self.lectures(), "problem": self.problem()}
+                "lectures": self.lectures(), "problem": self.problem(), "glossary": self.glossary_state()}
 
     # -- actions --------------------------------------------------------------------------------------------------
     def set_folders(self, body: dict) -> None:
@@ -188,6 +194,9 @@ class App:
                             pipeline.Options(language=language, **opts))
 
     def enqueue(self, videos: list[str], rebuild: bool = False) -> None:
+        if (not rebuild and self.settings["options"]["cleanup"]
+                and pipeline.read_glossary(self.settings["pdf_dir"]) is None):
+            raise pipeline.PipelineError("Build the glossary first (section 2): it makes the transcripts much better.")
         for name in videos:
             row = self._row(name)
             with self.lock:
@@ -240,28 +249,47 @@ class App:
                 with self.lock:
                     state["elapsed_total"] = round(time.time() - state["started"])
 
-    def _deck(self, video: str) -> Path:
-        row = self._row(video)
-        if not row["pdf"]:
-            raise pipeline.PipelineError("Choose a slide PDF for this video first.")
-        return self._pdf_path(row["pdf"])
+    def build_glossary(self) -> None:
+        """Start building the glossary of the slides folder in the background (the page polls the progress)."""
+        folder = self.settings["pdf_dir"]
+        if not folder or not Path(folder).is_dir():
+            raise pipeline.PipelineError("Choose the slides folder first.")
+        with self.lock:
+            if self.glossary_job["building"]:
+                return
+            self.glossary_job = {"building": True, "error": None,
+                                 "progress": {"decks_done": 0, "decks_total": 0, "parts_done": 0, "parts_total": 0}}
 
-    def glossary(self, video: str, generate: bool = False) -> str:
-        """The glossary of the PDF folder: the saved one, or (first time / on request) a freshly built one."""
-        pdf = self._deck(video)
-        with self.glossary_lock:  # two requests for the same deck must not build it twice
-            saved = None if generate else pipeline.read_glossary(pdf)
-            if saved is not None:
-                return saved
-            self.glossary_progress = {"decks_done": 0, "decks_total": 0}
+        def progress(decks_done: int, decks_total: int, parts_done: int, parts_total: int) -> None:
+            with self.lock:
+                self.glossary_job["progress"] = {"decks_done": decks_done, "decks_total": decks_total,
+                                                 "parts_done": parts_done, "parts_total": parts_total}
 
-            def progress(done: int, total: int) -> None:
-                self.glossary_progress = {"decks_done": done, "decks_total": total}
+        def work() -> None:
+            error = None
+            try:
+                pipeline.make_glossary(folder, on_progress=progress)
+            except pipeline.PipelineError as exc:
+                error = str(exc)
+            except Exception as exc:
+                log.exception("glossary build failed")
+                error = f"{type(exc).__name__}: {exc}"
+            with self.lock:
+                self.glossary_job["building"] = False
+                self.glossary_job["error"] = error
 
-            return pipeline.make_glossary(pdf, on_progress=progress)
+        threading.Thread(target=work, daemon=True).start()
 
-    def save_glossary(self, video: str, text: str) -> None:
-        pipeline.save_glossary(self._deck(video), text)
+    def glossary_text(self) -> str:
+        text = pipeline.read_glossary(self.settings["pdf_dir"])
+        if text is None:
+            raise pipeline.PipelineError("The glossary is not built yet.")
+        return text
+
+    def save_glossary(self, text: str) -> None:
+        if not Path(self.settings["pdf_dir"]).is_dir():
+            raise pipeline.PipelineError("Choose the slides folder first.")
+        pipeline.save_glossary(self.settings["pdf_dir"], text)
 
     def reset(self, video: str) -> None:
         self._row(video)
@@ -324,15 +352,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._allowed():
             return self._json({"error": "forbidden"}, 403)
-        path, _, query = self.path.partition("?")
+        path = self.path.partition("?")[0]
         if path == "/":
             return self._send(200, (STATIC / "index.html").read_bytes(), "text/html")
         if path == "/api/state":
             return self._json(self.app.state())
-        if path == "/api/glossary/progress":
-            return self._json(self.app.glossary_progress)
         if path == "/api/glossary":
-            return self._guarded(lambda: {"text": self.app.glossary(_param(query, "video"))})
+            return self._guarded(lambda: {"text": self.app.glossary_text()})
         self._json({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -350,8 +376,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/pick": lambda: {"path": pick_folder(a.settings.get(body.get("kind", ""), ""))},
             "/api/run": lambda: a.enqueue(body["videos"], bool(body.get("rebuild"))),
             "/api/cancel": lambda: a.cancel(body.get("video")),
-            "/api/glossary/generate": lambda: {"text": a.glossary(body["video"], generate=True)},
-            "/api/glossary/save": lambda: a.save_glossary(body["video"], body["text"]),
+            "/api/glossary/build": lambda: a.build_glossary(),
+            "/api/glossary/save": lambda: a.save_glossary(body["text"]),
             "/api/reset": lambda: a.reset(body["video"]),
             "/api/open": lambda: a.open_path(body.get("kind", "folder"), body.get("video")),
         }
@@ -370,12 +396,6 @@ class Handler(BaseHTTPRequestHandler):
             log.exception("request failed")
             return self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
         self._json(result if isinstance(result, dict) else {"ok": True})
-
-
-def _param(query: str, name: str) -> str:
-    from urllib.parse import parse_qs
-
-    return (parse_qs(query).get(name) or [""])[0]
 
 
 class LocalServer(ThreadingHTTPServer):

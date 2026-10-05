@@ -68,6 +68,7 @@ def wait_for(app, video, status, timeout=5):
 
 
 def test_a_queued_lecture_runs_in_the_background_and_reports_progress(app, monkeypatch):
+    app.save_glossary("term")  # the cleanup needs the glossary
     seen = {}
 
     def fake_run(job, reporter):
@@ -88,6 +89,7 @@ def test_a_queued_lecture_runs_in_the_background_and_reports_progress(app, monke
 
 
 def test_a_failure_is_shown_not_raised_and_a_cancel_stops_the_run(app, monkeypatch):
+    app.save_glossary("term")  # the cleanup needs the glossary
     def boom(job, reporter):
         raise pipeline.PipelineError("the PDF is broken")
 
@@ -108,26 +110,63 @@ def test_a_failure_is_shown_not_raised_and_a_cancel_stops_the_run(app, monkeypat
     wait_for(app, "one.mp4", "cancelled")
 
 
-def test_a_video_without_slides_is_not_started(app):
-    app.set_pair("one.mp4", "")
-    (app.settings.get("pairs"))["one.mp4"] = ""
-    app.set_folders({"pdf_dir": str(app.settings["out_dir"])})  # a folder without PDFs
+def test_a_video_without_slides_is_not_started(app, tmp_path):
+    empty = tmp_path / "empty"  # a slides folder without PDFs
+    empty.mkdir()
+    app.set_folders({"pdf_dir": str(empty)})
+    app.save_glossary("term")  # the cleanup needs the glossary
     app.enqueue(["one.mp4"])
     assert app.jobs["one.mp4"]["status"] == "error" and "No slide PDF" in app.jobs["one.mp4"]["error"]
 
 
-def test_the_glossary_is_shared_by_the_folder_and_built_only_once(app, tmp_path, monkeypatch):
-    built = []
-    monkeypatch.setattr(pipeline, "make_glossary", lambda pdf, on_progress=None: built.append(pdf.name) or "fresh")
-    assert app.glossary("one.mp4") == "fresh" and built == ["one.pdf"]
-    app.save_glossary("one.mp4", "alpha\n\n beta \n")
-    assert app.glossary("one.mp4") == "alpha\nbeta\n" and built == ["one.pdf"]  # read from the file now
+def test_the_glossary_is_one_file_in_the_slides_folder(app, tmp_path):
+    assert app.glossary_state()["exists"] is False
+    with pytest.raises(pipeline.PipelineError, match="not built"):
+        app.glossary_text()
+    app.save_glossary("alpha\n\n beta \n")
+    assert app.glossary_text() == "alpha\nbeta\n"
     assert (tmp_path / "pdf" / ".lecture2doc" / "glossary.txt").is_file()
-    assert app.glossary("Two.MKV") == "alpha\nbeta\n"  # another lecture, another PDF: the same glossary
-    assert all(r["has_glossary"] for r in app.lectures())
-    assert app.glossary("one.mp4", generate=True) == "fresh" and built == ["one.pdf", "one.pdf"]
-    app.reset("one.mp4")  # starting over keeps the shared glossary
-    assert all(r["has_glossary"] for r in app.lectures())
+    assert app.glossary_state()["exists"] is True and app.glossary_state()["terms"] == 2
+    app.enqueue(["one.mp4"], rebuild=True)  # not blocked; the glossary exists anyway
+    app.reset("one.mp4")  # starting over keeps the glossary
+    assert app.glossary_state()["exists"] is True
+
+
+def test_the_glossary_is_built_in_the_background_with_progress(app, tmp_path, monkeypatch):
+    def fake(folder, on_progress=None):
+        on_progress(1, 4, 2, 5)
+        pipeline.save_glossary(folder, "term")
+        return "term"
+
+    monkeypatch.setattr(pipeline, "make_glossary", fake)
+    app.build_glossary()
+    end = time.time() + 5
+    while app.glossary_state()["building"] and time.time() < end:
+        time.sleep(0.02)
+    state = app.glossary_state()
+    assert state["exists"] and state["error"] is None
+    assert state["progress"] == {"decks_done": 1, "decks_total": 4, "parts_done": 2, "parts_total": 5}
+
+
+def test_a_failed_glossary_build_is_reported(app, monkeypatch):
+    def boom(folder, on_progress=None):
+        raise pipeline.PipelineError("the API key is wrong")
+
+    monkeypatch.setattr(pipeline, "make_glossary", boom)
+    app.build_glossary()
+    end = time.time() + 5
+    while app.glossary_state()["building"] and time.time() < end:
+        time.sleep(0.02)
+    assert app.glossary_state()["error"] == "the API key is wrong" and not app.glossary_state()["exists"]
+
+
+def test_processing_with_cleanup_needs_the_glossary_first(app):
+    with pytest.raises(pipeline.PipelineError, match="Build the glossary first"):
+        app.enqueue(["one.mp4"])
+    assert "one.mp4" not in app.jobs
+    app.set_options({"cleanup": False})  # no cleanup, no glossary needed
+    app.enqueue(["one.mp4"])
+    assert "one.mp4" in app.jobs
 
 
 @pytest.fixture
@@ -166,11 +205,11 @@ def test_requests_from_other_websites_are_refused(server):
 
 
 def test_unknown_videos_and_routes_are_rejected(server):
-    assert call(server, "/api/glossary?video=nope.mp4")[0] == 400
+    assert call(server, "/api/glossary")[0] == 400  # not built yet
     assert call(server, "/api/run", {"videos": ["../../etc/passwd"]})[0] == 400
     assert call(server, "/api/nothing", {})[0] == 404
 
 
-def test_the_glossary_progress_is_served(server):
-    status, data = call(server, "/api/glossary/progress")
-    assert status == 200 and json.loads(data) == {"decks_done": 0, "decks_total": 0}
+def test_the_state_tells_whether_the_glossary_exists(server):
+    state = json.loads(call(server, "/api/state")[1])
+    assert state["glossary"]["exists"] is False and state["glossary"]["building"] is False

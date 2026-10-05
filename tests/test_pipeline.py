@@ -520,7 +520,7 @@ def test_the_first_run_saves_the_glossary_and_later_runs_use_the_edited_one(tmp_
     monkeypatch.setattr(pipeline, "cleanup_spans", fake_cleanup)
     run(video, pdf, tmp_path)
     assert (tmp_path / ".lecture2doc" / "glossary.txt").read_text(encoding="utf-8") == "alpha\nbeta\n"
-    pipeline.save_glossary(pdf, "alpha\n\n  gamma  \n")  # the user edits it
+    pipeline.save_glossary(pdf.parent, "alpha\n\n  gamma  \n")  # the user edits it
     run(video, pdf, tmp_path)
     assert built == [1] and used == ["alpha\nbeta", "alpha\ngamma\n"]
 
@@ -595,9 +595,9 @@ def test_the_glossary_is_built_from_every_pdf_in_the_folder(tmp_path, monkeypatc
     monkeypatch.setattr(pipeline, "make_client", lambda cfg: object())
     monkeypatch.setattr(pipeline, "build_glossary", lambda client, model, slides, cache, limiter=None, on_progress=None:
                         seen.extend(f"{s.title}|{s.number}" for s in slides) or "term")
-    assert pipeline.make_glossary(tmp_path / "a.pdf") == "term"
+    assert pipeline.make_glossary(tmp_path) == "term"
     assert seen == ["a: Alpha one|1", "a: Alpha two|2", "b: Beta one|1"]  # the broken file is skipped
-    assert pipeline.read_glossary(tmp_path / "b.pdf") == "term\n"  # the same glossary for every PDF of the folder
+    assert pipeline.read_glossary(tmp_path) == "term\n"  # the same glossary for every PDF of the folder
 
 
 def test_the_glossary_build_reports_how_many_pdfs_are_done(tmp_path, monkeypatch):
@@ -624,6 +624,26 @@ def test_the_glossary_build_reports_how_many_pdfs_are_done(tmp_path, monkeypatch
     # 3 PDFs of ~10 characters each, at most 40 characters per request: every PDF needs its own request
     monkeypatch.setattr(pipeline, "build_glossary", lambda *a, **k: real(*a, **{**k, "max_chars": 60}))
     seen = []
-    pipeline.make_glossary(tmp_path / "a.pdf", client=Client(), on_progress=lambda done, total: seen.append((done, total)))
-    assert seen[0] == (0, 3) and seen[-1] == (3, 3) and [d for d, _ in seen] == sorted(d for d, _ in seen)
+    pipeline.make_glossary(tmp_path, client=Client(), on_progress=lambda *args: seen.append(args))
+    assert seen[0] == (0, 3, 0, 0) and seen[-1][:2] == (3, 3) and seen[-1][2] == seen[-1][3] > 1
+    assert [a[0] for a in seen] == sorted(a[0] for a in seen)
     assert len(calls) > 1
+
+
+def test_text_that_repeats_across_the_slides_is_sent_to_the_glossary_only_once(tmp_path):
+    import pymupdf
+
+    doc = pymupdf.open()
+    for number in (1, 2):
+        page = doc.new_page(width=960, height=540)
+        page.insert_text((40, 100), f"Unique{number}", fontsize=20)
+        page.insert_text((40, 500), "Footer text here", fontsize=10)
+    doc.save(tmp_path / "a.pdf")
+    texts = [s.text for s in pipeline.folder_slides(tmp_path)]
+    assert sum("Footer text here" in t for t in texts) == 1 and "Unique2" in texts[1]
+
+
+def test_make_glossary_refuses_a_folder_without_pdfs(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCADS_API_KEY", "dummy")
+    with pytest.raises(pipeline.PipelineError, match="no readable PDF"):
+        pipeline.make_glossary(tmp_path)
