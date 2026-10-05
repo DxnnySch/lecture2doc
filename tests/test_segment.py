@@ -84,3 +84,30 @@ def test_pillarboxed_4_3_slides_match_in_16_9_video(tmp_path):
     labels, conf = match_frames(frames, slide_features(images, aspect=16 / 9), 0.6)
     assert smooth(labels).tolist() == [0] * 3 + [1] * 3 + [0] * 3
     assert conf.min() >= 0.6
+
+
+def test_extract_frames_bad_input_raises_with_ffmpeg_message(tmp_path):
+    bad = tmp_path / "garbage.mp4"
+    bad.write_bytes(b"this is not a video")
+    with pytest.raises(RuntimeError, match="frame extraction failed"):
+        extract_frames(bad, 1.0)
+
+
+def test_extract_frames_includes_stderr_snippet(tmp_path, monkeypatch):
+    import subprocess
+
+    def boom(*a, **k):
+        raise subprocess.CalledProcessError(1, "ffmpeg", stderr=b"MARKER-xyz")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    with pytest.raises(RuntimeError, match="MARKER-xyz"):
+        extract_frames(tmp_path / "v.mp4", 1.0)
+
+
+def test_extract_frames_zero_frames_raises(tmp_path, monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=b""))
+    with pytest.raises(RuntimeError, match="no video frames extracted from"):
+        extract_frames(tmp_path / "v.mp4", 1.0)

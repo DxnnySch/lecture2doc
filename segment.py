@@ -24,7 +24,13 @@ def extract_frames(video, interval: float = 1.0) -> np.ndarray:
         "-vf", f"fps=1/{interval},scale={FRAME_W}:{FRAME_H}:flags=area,format=gray",
         "-f", "rawvideo", "-",
     ]
-    data = subprocess.run(cmd, capture_output=True, check=True).stdout
+    try:
+        data = subprocess.run(cmd, capture_output=True, check=True).stdout
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
+        raise RuntimeError(f"frame extraction failed: {stderr[-500:]}") from e
+    if not data:
+        raise RuntimeError(f"no video frames extracted from {video}")
     return np.frombuffer(data, np.uint8).reshape(-1, FRAME_H, FRAME_W)
 
 

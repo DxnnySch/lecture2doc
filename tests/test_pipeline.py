@@ -199,3 +199,14 @@ def test_probe_failure_falls_back_to_16_9_with_warning(tmp_path, monkeypatch, ca
     monkeypatch.setattr(lecture2doc, "probe_aspect", bad_probe)
     run(video, pdf, pptx, tmp_path, "--no-cleanup")
     assert "assuming 16:9" in caplog.text
+
+
+def test_frame_extraction_error_exits(tmp_path, monkeypatch):
+    video, pdf, pptx = setup(tmp_path, monkeypatch)
+
+    def boom(*a, **k):
+        raise RuntimeError("no video frames extracted from lec.mp4")
+
+    monkeypatch.setattr(lecture2doc, "extract_frames", boom)
+    with pytest.raises(SystemExit, match="no video frames extracted"):
+        run(video, pdf, pptx, tmp_path, "--no-cleanup")

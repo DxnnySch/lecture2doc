@@ -127,8 +127,11 @@ def main(argv=None) -> int:
         except RuntimeError as exc:
             log.warning("%s; assuming 16:9", exc)
             aspect = 16 / 9
-        frames = extract_frames(video, args.interval)
-        labels, conf = match_frames(frames, slide_features([s.image for s in slides], aspect), args.threshold)
+        try:
+            frames = extract_frames(video, args.interval)
+            labels, conf = match_frames(frames, slide_features([s.image for s in slides], aspect), args.threshold)
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from None
         spans = build_spans(smooth(labels, args.smooth), conf, args.interval)
         print_summary(spans, len(slides))
         try:
