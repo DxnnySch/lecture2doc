@@ -33,3 +33,24 @@ def make_pptx(path: Path, slides: list[tuple[str | None, str, bool]]) -> Path:
             s._element.set("show", "0")
     prs.save(path)
     return path
+
+
+import subprocess
+
+from PIL import Image
+
+
+def make_video(images, order, path: Path, fps: int = 1) -> Path:
+    frames = path.parent / (path.stem + "_frames")
+    frames.mkdir(exist_ok=True)
+    for i, idx in enumerate(order):
+        img = Image.new("RGB", (320, 180)) if idx is None else images[idx].resize((320, 180))
+        img.save(frames / f"f{i:03d}.png")
+    seconds = len(order) / fps
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-framerate", str(fps), "-i", str(frames / "f%03d.png"),
+         "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(fps), "-c:a", "aac", "-shortest", str(path)],
+        check=True,
+    )
+    return path
