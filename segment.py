@@ -36,8 +36,40 @@ def _normalise(mat: np.ndarray) -> np.ndarray:
     return np.divide(mat, norms, out=np.zeros_like(mat), where=norms > 1e-6)
 
 
-def slide_features(images: list[Image.Image]) -> np.ndarray:
-    rows = [np.asarray(im.convert("L").resize((FRAME_W, FRAME_H), Image.BOX)).ravel() for im in images]
+def probe_aspect(video) -> float:
+    """Display aspect ratio (width / height) of the first video stream, via ffprobe."""
+    cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+           "-of", "csv=p=0:s=x", str(video)]
+    try:
+        out = subprocess.run(cmd, capture_output=True, check=True).stdout.decode("utf-8", errors="replace")
+        w, h = (int(v) for v in out.strip().split("x"))
+        if w <= 0 or h <= 0:
+            raise ValueError("non-positive size")
+        return w / h
+    except (subprocess.CalledProcessError, OSError, ValueError) as exc:
+        raise RuntimeError(f"ffprobe could not read the video size of {video}: {exc}") from exc
+
+
+def _letterbox(im: Image.Image, aspect: float) -> Image.Image:
+    """Fit the image, aspect preserved and centred on black, into a canvas of the given aspect ratio."""
+    w, h = im.size
+    if abs(w / h - aspect) < 1e-3:
+        return im
+    if w / h > aspect:
+        cw, ch = w, max(1, round(w / aspect))
+    else:
+        cw, ch = max(1, round(h * aspect)), h
+    canvas = Image.new(im.mode, (cw, ch))
+    canvas.paste(im, ((cw - w) // 2, (ch - h) // 2))
+    return canvas
+
+
+def slide_features(images: list[Image.Image], aspect: float = 16 / 9) -> np.ndarray:
+    """Features of the slides as they appear in a video of the given aspect ratio (letterboxed/pillarboxed)."""
+    rows = [
+        np.asarray(_letterbox(im.convert("L"), aspect).resize((FRAME_W, FRAME_H), Image.BOX)).ravel()
+        for im in images
+    ]
     return _normalise(np.stack(rows))
 
 

@@ -188,3 +188,14 @@ def test_thumbnails_toggle(tmp_path, monkeypatch):
     without = run(video, pdf, pptx, tmp_path, "--no-cleanup", "--no-thumbnails", out=tmp_path / "b.docx")
     assert len(Document(with_thumbs).inline_shapes) >= 1
     assert len(Document(without).inline_shapes) == 0
+
+
+def test_probe_failure_falls_back_to_16_9_with_warning(tmp_path, monkeypatch, caplog):
+    video, pdf, pptx = setup(tmp_path, monkeypatch)
+
+    def bad_probe(v):
+        raise RuntimeError("ffprobe could not read the video size")
+
+    monkeypatch.setattr(lecture2doc, "probe_aspect", bad_probe)
+    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    assert "assuming 16:9" in caplog.text

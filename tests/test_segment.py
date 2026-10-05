@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from helpers import make_pdf, make_video
-from segment import (Span, absorb_unmatched, build_spans, extract_frames, match_frames, slide_features,
+from segment import (Span, absorb_unmatched, build_spans, extract_frames, match_frames, probe_aspect, slide_features,
                      smooth, unmatched_seconds)
 from slides import render_pdf
 
@@ -58,3 +58,29 @@ def test_build_spans_confidence_is_mean():
     spans = build_spans(np.array([0, 0, 1]), np.array([0.8, 1.0, 0.7]), 2.0)
     assert (spans[0].slide, spans[0].start, spans[0].end) == (1, 0.0, 4.0)
     assert spans[0].confidence == pytest.approx(0.9)
+
+
+def _pillarboxed(tmp_path):
+    images, _ = render_pdf(make_pdf(tmp_path / "s43.pdf", 3, width=720, height=540))
+    video = make_video(images, [0] * 3 + [1] * 3 + [0] * 3, tmp_path / "v43.mp4", pillarbox_4_3=True)
+    return images, video
+
+
+def test_probe_aspect_is_16_9(tmp_path):
+    _, video = _pillarboxed(tmp_path)
+    assert probe_aspect(video) == pytest.approx(16 / 9, abs=0.01)
+
+
+def test_probe_aspect_bad_file_raises(tmp_path):
+    bad = tmp_path / "x.txt"
+    bad.write_text("nope")
+    with pytest.raises(RuntimeError, match="ffprobe"):
+        probe_aspect(bad)
+
+
+def test_pillarboxed_4_3_slides_match_in_16_9_video(tmp_path):
+    images, video = _pillarboxed(tmp_path)
+    frames = extract_frames(video, 1.0)
+    labels, conf = match_frames(frames, slide_features(images, aspect=16 / 9), 0.6)
+    assert smooth(labels).tolist() == [0] * 3 + [1] * 3 + [0] * 3
+    assert conf.min() >= 0.6

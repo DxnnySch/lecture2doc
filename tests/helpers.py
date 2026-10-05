@@ -5,13 +5,13 @@ import pymupdf
 from pptx import Presentation
 
 
-def make_pdf(path: Path, n: int, titles: list[str] | None = None) -> Path:
+def make_pdf(path: Path, n: int, titles: list[str] | None = None, width: int = 960, height: int = 540) -> Path:
     doc = pymupdf.open()
     for i in range(n):
-        page = doc.new_page(width=960, height=540)
+        page = doc.new_page(width=width, height=height)
         rng = np.random.RandomState(i)
         for _ in range(12):
-            x, y = int(rng.randint(0, 800)), int(rng.randint(60, 420))
+            x, y = int(rng.randint(0, width - 160)), int(rng.randint(60, height - 120))
             w, h = int(rng.randint(40, 160)), int(rng.randint(20, 100))
             page.draw_rect(pymupdf.Rect(x, y, x + w, y + h), color=None, fill=tuple(float(c) for c in rng.rand(3)))
         page.insert_text((40, 40), titles[i] if titles else f"Title {i + 1}", fontsize=24)
@@ -40,11 +40,17 @@ import subprocess
 from PIL import Image
 
 
-def make_video(images, order, path: Path, fps: int = 1) -> Path:
+def make_video(images, order, path: Path, fps: int = 1, pillarbox_4_3: bool = False) -> Path:
     frames = path.parent / (path.stem + "_frames")
     frames.mkdir(exist_ok=True)
     for i, idx in enumerate(order):
-        img = Image.new("RGB", (320, 180)) if idx is None else images[idx].resize((320, 180))
+        if idx is None:
+            img = Image.new("RGB", (320, 180))
+        elif pillarbox_4_3:
+            img = Image.new("RGB", (320, 180))
+            img.paste(images[idx].resize((240, 180)), (40, 0))
+        else:
+            img = images[idx].resize((320, 180))
         img.save(frames / f"f{i:03d}.png")
     seconds = len(order) / fps
     subprocess.run(

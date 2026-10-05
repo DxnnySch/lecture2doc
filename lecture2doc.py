@@ -15,10 +15,12 @@ from api import make_client
 from cleanup import LLMCache, build_glossary, build_outline, cleanup_spans
 from config import ConfigError, check_ffmpeg, load_config
 from docx_out import SpanText, write_docx
-from segment import (Span, absorb_unmatched, build_spans, extract_frames, match_frames, slide_features, smooth,
-                     unmatched_seconds)
+from segment import (Span, absorb_unmatched, build_spans, extract_frames, match_frames, probe_aspect,
+                     slide_features, smooth, unmatched_seconds)
 from slides import load_slides
 from transcribe import assign_words, transcribe_words
+
+log = logging.getLogger(__name__)
 
 
 def parse_args(argv):
@@ -120,8 +122,13 @@ def main(argv=None) -> int:
         print_summary(spans, len(slides))
     else:
         print("Matching video frames to slides...")
+        try:
+            aspect = probe_aspect(video)
+        except RuntimeError as exc:
+            log.warning("%s; assuming 16:9", exc)
+            aspect = 16 / 9
         frames = extract_frames(video, args.interval)
-        labels, conf = match_frames(frames, slide_features([s.image for s in slides]), args.threshold)
+        labels, conf = match_frames(frames, slide_features([s.image for s in slides], aspect), args.threshold)
         spans = build_spans(smooth(labels, args.smooth), conf, args.interval)
         print_summary(spans, len(slides))
         try:
