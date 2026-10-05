@@ -11,6 +11,9 @@ from pptx import Presentation
 
 log = logging.getLogger(__name__)
 
+TITLE_LIMIT = 100
+TITLE_REGION = 0.6  # titles sit in the upper part of a slide; footers and page numbers sit at the bottom
+
 
 @dataclass
 class Slide:
@@ -31,11 +34,38 @@ def _first_line(text: str) -> str | None:
     return None
 
 
-def _fallback_title(body: str, limit: int = 100) -> str | None:
-    line = _first_line(body)
+def _truncate(line: str | None, limit: int = TITLE_LIMIT) -> str | None:
     if line is not None and len(line) > limit:
-        line = line[: limit - 1].rstrip() + "…"
+        return line[: limit - 1].rstrip() + "…"
     return line
+
+
+def _fallback_title(body: str, limit: int = TITLE_LIMIT) -> str | None:
+    return _truncate(_first_line(body), limit)
+
+
+def _page_title(page) -> str | None:
+    """The largest text in the upper part of the page (topmost on ties); wrapped lines of the same block that
+    share that size are joined. Reading order is useless here: in many exports the footer comes first."""
+    limit = page.rect.height * TITLE_REGION
+    lines = []  # (font size, top y, block number, text)
+    for number, block in enumerate(page.get_text("dict")["blocks"]):
+        if block.get("type") != 0:
+            continue
+        for line in block["lines"]:
+            text = _squash("".join(span["text"] for span in line["spans"]))
+            if text and line["bbox"][1] < limit:
+                lines.append((max(span["size"] for span in line["spans"]), line["bbox"][1], number, text))
+    if not lines:
+        return None
+    size, _, block_number, _ = max(lines, key=lambda l: (round(l[0], 1), -l[1]))
+    parts = sorted((l for l in lines if l[2] == block_number and abs(l[0] - size) < 0.6), key=lambda l: l[1])
+    return _truncate(_squash(" ".join(l[3] for l in parts)))
+
+
+def pdf_titles(pdf_path) -> list[str | None]:
+    with pymupdf.open(pdf_path) as doc:
+        return [_page_title(page) for page in doc]
 
 
 def render_pdf(pdf_path, width: int = 480) -> tuple[list[Image.Image], list[str]]:
@@ -81,4 +111,5 @@ def load_slides(pdf_path, pptx_path) -> list[Slide]:
             "PPTX has %d visible slides but the PDF has %d pages: slide count does not match; "
             "using PDF text for titles", len(pptx), len(images),
         )
-    return [Slide(i + 1, _first_line(t), t.strip(), img) for i, (t, img) in enumerate(zip(pdf_texts, images))]
+    titles = pdf_titles(pdf_path)
+    return [Slide(i + 1, titles[i], t.strip(), img) for i, (t, img) in enumerate(zip(pdf_texts, images))]
