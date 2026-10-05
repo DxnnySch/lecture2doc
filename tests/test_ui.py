@@ -262,6 +262,5 @@ def test_the_list_of_models_comes_from_the_api(app, tmp_path, monkeypatch):
     monkeypatch.setattr(api, "make_client", lambda cfg: Client())
     models = app.api_models()
     assert [m["id"] for m in models] == ["zai-org/GLM-5.3", "alias-stt"]  # only what the tasks can use
-    assert models[0]["recommended"] is True and models[1]["recommended"] is False
     defaults = app.default_models()
     assert defaults["transcribe"] == ["alias-stt"] and "zai-org/GLM-5.3" in defaults["cleanup"]

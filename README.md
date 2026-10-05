@@ -57,13 +57,14 @@ If you did not activate the environment, call its Python directly instead: `.ven
 
 ## Using the interface
 
-The page has five numbered sections, top to bottom:
+The page has four numbered sections, top to bottom:
 
 1. **Folders.** Choose the folder with your slide PDFs, the folder with your videos, and where the Word files should go (Browse… opens a folder dialog, or paste a path). The choice is remembered for next time.
 2. **Glossary.** Press **Build glossary** once. It reads all PDFs in the slides folder and lists the technical terms, names and abbreviations of your course; the AI uses it to fix speech-recognition errors, which makes the transcripts much better. A counter shows how many PDFs are done. Processing is blocked until the glossary exists. Afterwards you can **Edit glossary** (see below). This section is hidden when the AI cleanup is switched off in section 4.
 3. **Lectures.** Every video in the folder is listed (in natural order) with the PDF it was matched to by file name (for example `week3.mp4` and `week3.pdf`). If the match is wrong or missing, pick the right PDF from the drop-down. Tick the lectures you want and press **Process selected**. They run one after the other. Each lecture shows a progress bar with the current step (finding the slides in the video, transcribing, cleaning up the text, writing the document), how far it is, and how long it has been running; the bar at the bottom shows how many lectures of the batch are finished. *Show details* lists remarks such as how many seconds of video matched each slide. **Stop** ends the run at the next step; finished work is kept. When a lecture is done, **Open Word file** opens the document, and **Open output folder** opens the folder with all of them.
 4. **Document options** (collapsed): AI cleanup on or off, thumbnails, time stamps, page breaks, grouping by slide, raw transcript, spoken language.
-5. **AI models** (collapsed): which of the models of the ScaDS.AI API may do which task (see below).
+
+The **settings icon** (gear, top right) opens a popup where you choose the AI models for each task (see below).
 
 ### Fixing mistakes: the glossary and re-running
 
@@ -91,7 +92,7 @@ For a video called `week3.mp4` with the slides `week3.pdf`, and the output folde
 
 1. Video frames are sampled and compared with the PDF pages to find which slide is on screen when. Pillarboxed 4:3 slides in a 16:9 recording are handled, and the page number in the corner of the video identifies half-built animated slides.
 2. The audio is cut at every slide change, and each stretch on one slide is transcribed on its own, so every word belongs to exactly one slide.
-3. An LLM (the fastest of the most powerful ones, chosen automatically) fixes recognition errors. The glossary is built once from the text of all the slide PDFs in the folder (and can be edited by you), and each stretch of transcript is corrected with that glossary, the list of all slide titles, and the text of the current, previous and next slide. Guardrails fall back to the raw text if the output deviates too much.
+3. An LLM fixes recognition errors (which model, you choose; see below). The glossary is built once from the text of all the slide PDFs in the folder (and can be edited by you), and each stretch of transcript is corrected with that glossary, the list of all slide titles, and the text of the current, previous and next slide. Guardrails fall back to the raw text if the output deviates too much.
 4. The Word document is written with real heading styles, so the navigation pane and Ctrl+F work.
 
 Slide titles are taken from the PDF: the largest text in the upper part of each page, so footers and page numbers are ignored.
@@ -107,21 +108,21 @@ Set these in `.env`:
 | `SCADS_API_KEY` | (required) | your ScaDS.AI API key |
 | `SCADS_BASE_URL` | `https://llm.scads.ai/v1` | API endpoint |
 | `SCADS_STT_MODEL` | `alias-stt` | speech-to-text model |
-| `SCADS_LLM_MODEL` | (not set) | model for the transcript cleanup. Not set = the four strong models below; a model name = only that one. Only the default: the choice in section 5 of the page wins |
+| `SCADS_LLM_MODEL` | (not set) | model for the transcript cleanup. Not set = the default models below; a model name = only that one. Only the default: the choice in the settings popup wins |
 | `SCADS_GLOSSARY_MODEL` | same as `SCADS_LLM_MODEL` | the same for the glossary step |
-| `SCADS_LLM_MODELS` | the four models below | the default models when `SCADS_LLM_MODEL` is not set, comma separated |
+| `SCADS_LLM_MODELS` | the default models below | the default models when `SCADS_LLM_MODEL` is not set, comma separated |
 | `SCADS_REQUESTS_PER_MINUTE` | `25` | request cap per model; the gateway allowed 30 per key and model when this was written, lower it if your quota is smaller |
 
 ### Choosing the AI models
 
-The ScaDS.AI gateway offers many models and their speed differs a lot (in a test between 0.8 s and 11 s for the same cleanup request). In section 5 of the page you choose, **for each task separately**, which models you find suitable. The list comes straight from the API, so new models appear by themselves. The tasks are *Building the glossary*, *Correcting the text* and *Speech to text*.
+The ScaDS.AI gateway offers many models and their speed differs a lot (in a test between 0.8 s and 11 s for the same cleanup request). In the settings popup (gear icon, top right) you choose, **for each task separately**, which models you find suitable. The list comes straight from the API, so new models appear by themselves. The tasks are *Building the glossary*, *Correcting the text* and *Speech to text*.
 
 - **One model ticked:** only that model is used for the task.
 - **Several models ticked:** the fastest one answers each request, chosen dynamically:
   1. At the start of a glossary build or a cleanup, the models get the same small test request in parallel (about 10 seconds). A model that fails it or answers wrongly is not used. For speech to text there is no such test (it would need real speech): each model is tried on a clip and the speed is learned from the real clips.
   2. Every following request goes to the model expected to answer first, based on its measured speed (kept up to date from the real answers) and on how many requests it is already working on, so busy models share the load.
   3. A model that returns an error, hits its rate limit or takes longer than two minutes is skipped for a minute and the next one answers.
-- Without a choice, the glossary and the text correction use the four strongest chat models (marked with a star): `alias-huge-no-thinking`, `zai-org/GLM-5.3`, `MiniMaxAI/MiniMax-M3` and `openai/gpt-oss-120b`, and speech to text uses `alias-stt`. The API says nothing about how strong a model is, so the star list is fixed in the code. A model named in `.env` (`SCADS_LLM_MODEL`, `SCADS_GLOSSARY_MODEL`, `SCADS_STT_MODEL`) is the default of its task until you choose in the page.
+- Without a choice, the glossary and the text correction use these default chat models: `alias-huge-no-thinking`, `zai-org/GLM-5.3`, `MiniMaxAI/MiniMax-M3` and `openai/gpt-oss-120b`, and speech to text uses `alias-stt`. This is only a starting point: the API does not say how good a model is, so lecture2doc cannot rank them. A model named in `.env` (`SCADS_LLM_MODEL`, `SCADS_GLOSSARY_MODEL`, `SCADS_STT_MODEL`) is the default of its task until you choose in the page.
 
 The log under *Show details* lists the models by speed and how many requests each one answered. Models differ in quality, not only in speed: for text correction, look at the result of a lecture (*Also include the raw transcript* helps) before you tick a small model.
 
@@ -134,7 +135,7 @@ The API client is the standard OpenAI one, so another OpenAI-compatible service 
 | The page says to add your API key | create `.env` as described in step 3 of the setup, then reload the page |
 | `ffmpeg` not found | install it and make sure `ffmpeg -version` works in the same terminal |
 | A video has no PDF | the names are too different; choose the PDF in the drop-down of that lecture |
-| The AI uses a different model than you expect | check section 5 of the page: a model you ticked there wins over `.env`, and one named in `.env` is the default until you tick something |
+| The AI uses a different model than you expect | check the settings popup (gear icon): a model you ticked there wins over `.env`, and one named in `.env` is the default until you tick something |
 | *Failed: ... open in Word* | the `.docx` is open in Word; close it and process the lecture again (nothing is transcribed twice) |
 | Wrong slide on some pages, or many unmatched seconds | tune `--threshold` and `--smooth` or correct `segments.json` on the command line (see below) |
 | HTTP 429 (rate limit) | retried automatically; if it keeps happening, lower `SCADS_REQUESTS_PER_MINUTE` |

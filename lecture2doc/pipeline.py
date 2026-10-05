@@ -120,7 +120,7 @@ class Options:
     models: dict = field(default_factory=dict)  # per task ("glossary", "cleanup", "transcribe") the chosen models
 
     def models_for(self, task: str, cfg) -> list[str]:
-        """The models chosen for a task; if none, what the .env says (or the powerful ones)."""
+        """The models chosen for a task; if none, what the .env says (or the default models)."""
         return list(self.models.get(task) or cfg.default_models(task))
 
 

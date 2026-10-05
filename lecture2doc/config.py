@@ -16,8 +16,8 @@ def default_env() -> Path:
     return here if here.exists() else Path(__file__).resolve().parent.parent / ".env"
 
 
-AUTO = "auto"  # as llm_model / glossary_model: pick the fastest of the powerful models for every request
-POWERFUL_MODELS = ("alias-huge-no-thinking", "zai-org/GLM-5.3", "MiniMaxAI/MiniMax-M3", "openai/gpt-oss-120b")
+AUTO = "auto"  # as llm_model / glossary_model: the default models, the fastest answers each request
+DEFAULT_CHAT_MODELS = ("alias-huge-no-thinking", "zai-org/GLM-5.3", "MiniMaxAI/MiniMax-M3", "openai/gpt-oss-120b")
 
 
 class ConfigError(Exception):
@@ -32,10 +32,10 @@ class Config:
     llm_model: str
     glossary_model: str
     requests_per_minute: int = 25  # below the gateway's observed 30/min per key and model
-    llm_models: tuple[str, ...] = POWERFUL_MODELS  # what AUTO chooses from
+    llm_models: tuple[str, ...] = DEFAULT_CHAT_MODELS  # what AUTO chooses from
 
     def default_models(self, task: str) -> tuple[str, ...]:
-        """The models a task uses when the user has not chosen any: what the .env says, else the powerful ones.
+        """The models a task uses when the user has not chosen any: what the .env says, else DEFAULT_CHAT_MODELS.
         Tasks: "glossary", "cleanup" (both chat models) and "transcribe" (speech to text)."""
         if task == "transcribe":
             return (self.stt_model,)
@@ -67,7 +67,7 @@ def load_config(env_path: Path | None = None) -> Config:
         glossary_model=values.get("SCADS_GLOSSARY_MODEL") or llm,
         requests_per_minute=per_minute,
         llm_models=tuple(m.strip() for m in (values.get("SCADS_LLM_MODELS") or "").split(",") if m.strip())
-        or POWERFUL_MODELS,
+        or DEFAULT_CHAT_MODELS,
     )
 
 

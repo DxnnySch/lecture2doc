@@ -111,7 +111,10 @@
   .modelgrid label.on { border-color: var(--accent); background: var(--accent-soft); }
   .modelgrid input { accent-color: var(--accent); }
   .modelgrid small { color: var(--muted); }
-  .star { color: var(--warn); }
+  header.top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+  button.icon { padding: 8px; border-radius: 50%; width: 40px; height: 40px; display: grid; place-items: center; flex: none; margin-top: 2px; }
+  #settings { width: min(820px, 96vw); }
+  .modelscroll { overflow: auto; max-height: 64vh; padding-right: 4px; }
   .spinner { color: var(--muted); padding: 30px; text-align: center; }
   .spinner.busy::before { content: ""; display: block; width: 28px; height: 28px; margin: 0 auto 12px; border-radius: 50%;
                           border: 3px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
@@ -126,8 +129,15 @@
 </head>
 <body>
 <main>
-  <h1>lecture2doc</h1>
-  <p class="tagline">Turn lecture videos and their slides into Word documents with a transcript per slide.</p>
+  <header class="top">
+    <div>
+      <h1>lecture2doc</h1>
+      <p class="tagline">Turn lecture videos and their slides into Word documents with a transcript per slide.</p>
+    </div>
+    <button class="icon" id="settings-btn" title="Settings: AI models" aria-label="Settings">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.65 8.9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9A1.7 1.7 0 0 0 10.03 3.1V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z"/></svg>
+    </button>
+  </header>
 
   <div id="banner"></div>
 
@@ -157,13 +167,6 @@
       <div class="optgrid" id="options"></div>
     </details>
   </section>
-  <section class="card">
-    <details class="options" id="models-details">
-      <summary><span class="step">5</span>&nbsp; AI models</summary>
-      <p class="stage" style="margin-top:12px">Choose which models may do each task. With <b>one</b> model ticked, only that one is used. With <b>several</b>, their response times are measured and the fastest one answers each request. <span class="star">★</span> marks the strongest models.</p>
-      <div id="model-tasks"><div class="spinner">Loading the list of models…</div></div>
-    </details>
-  </section>
 </main>
 
 <div class="footer"><div>
@@ -171,6 +174,14 @@
   <button id="stop" hidden>Stop</button>
   <button class="primary" id="go" disabled>Process selected</button>
 </div></div>
+
+<dialog id="settings">
+  <div class="dlg">
+    <div class="row"><h3 class="grow">Settings: AI models</h3><button id="settings-close" class="small">Close</button></div>
+    <p>Choose which models may do each task. With <b>one</b> model ticked, only that one is used. With <b>several</b>, their response times are measured and the fastest one answers each request. The choice is remembered.</p>
+    <div class="modelscroll" id="model-tasks"><div class="spinner">Loading the list of models…</div></div>
+  </div>
+</dialog>
 
 <dialog id="glossary">
   <div class="dlg">
@@ -387,7 +398,7 @@ function renderModels() {
   if (!apiModels) return;
   host.replaceChildren(...TASKS.map(([task, title, hint, mode]) => {
     const chosen = selectedFor(task);
-    const offered = apiModels.filter((m) => m.mode === mode).sort((a, b) => (b.recommended - a.recommended) || a.id.localeCompare(b.id));
+    const offered = apiModels.filter((m) => m.mode === mode).sort((a, b) => a.id.localeCompare(b.id));
     const ids = offered.map((m) => m.id);
     const missing = chosen.filter((id) => !ids.includes(id));
     const send = (list) => api("/api/models/select", { task, models: list }).then(poll).then(renderModels, fail);
@@ -399,7 +410,7 @@ function renderModels() {
         if (!now.length) { box.checked = true; return; }  // at least one model stays selected
         send(now);
       });
-      const label = el("label", { className: chosen.includes(m.id) ? "on" : "" }, box, el("span", {}, m.recommended ? el("span", { className: "star", textContent: "★ " }) : "", m.id,
+      const label = el("label", { className: chosen.includes(m.id) ? "on" : "" }, box, el("span", {}, m.id,
         m.missing ? el("small", { textContent: "  (not offered by the API any more)" }) : m.context ? el("small", { textContent: `  ${Math.round(m.context / 1000)}k context` }) : ""));
       grid.append(label);
     }
@@ -409,7 +420,8 @@ function renderModels() {
     return el("div", { className: "task" }, el("h4", { textContent: title }), el("div", { className: "stage", textContent: hint + " " + note }), grid, S.settings.models[task].length ? reset : "");
   }));
 }
-$("models-details").addEventListener("toggle", () => { if ($("models-details").open && !apiModels) loadModels(); });
+$("settings-btn").addEventListener("click", () => { $("settings").showModal(); if (!apiModels) loadModels(); });
+$("settings-close").addEventListener("click", () => $("settings").close());
 
 /* ---------- glossary section ---------- */
 let gSig = "";

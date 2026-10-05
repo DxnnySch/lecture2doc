@@ -172,20 +172,20 @@ class App:
         self.save_settings()
 
     def default_models(self) -> dict[str, list[str]]:
-        """What each task uses while the user has not chosen: the .env settings, else the powerful models."""
+        """What each task uses while the user has not chosen: the .env settings, else the default models."""
         try:
             cfg = load_config()
             return {task: list(cfg.default_models(task)) for task in TASKS}
         except ConfigError:
-            from lecture2doc.config import POWERFUL_MODELS
+            from lecture2doc.config import DEFAULT_CHAT_MODELS
 
-            return {"glossary": list(POWERFUL_MODELS), "cleanup": list(POWERFUL_MODELS), "transcribe": ["alias-stt"]}
+            return {"glossary": list(DEFAULT_CHAT_MODELS), "cleanup": list(DEFAULT_CHAT_MODELS),
+                    "transcribe": ["alias-stt"]}
 
     def api_models(self) -> list[dict]:
         """Every model the API offers (cached for a few minutes): id, kind (chat / audio_transcription / ...),
-        context size and whether it is one of the recommended strong chat models."""
+        and context size."""
         from lecture2doc.api import make_client
-        from lecture2doc.config import POWERFUL_MODELS
 
         stamp, cached = self._models_cache
         if cached and time.time() - stamp < MODELS_CACHE_SECONDS:
@@ -197,7 +197,7 @@ class App:
         except Exception as exc:
             raise pipeline.PipelineError(f"cannot read the list of models from the API: {exc}") from None
         models = [{"id": m.id, "mode": getattr(m, "mode", "chat"),
-                   "context": getattr(m, "max_input_tokens", None), "recommended": m.id in POWERFUL_MODELS}
+                   "context": getattr(m, "max_input_tokens", None)}
                   for m in data if getattr(m, "mode", "chat") in ("chat", "audio_transcription")]
         self._models_cache = (time.time(), models)
         return models

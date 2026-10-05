@@ -5,7 +5,7 @@ import httpx2
 import openai
 import pytest
 
-from lecture2doc.config import AUTO, POWERFUL_MODELS, load_config
+from lecture2doc.config import AUTO, load_config
 from lecture2doc.modelpick import (FastestChat, FastestTranscribe, audio_work, chat_work, select_chat,
                                    select_transcription)
 
