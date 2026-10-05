@@ -210,3 +210,23 @@ def test_frame_extraction_error_exits(tmp_path, monkeypatch):
     monkeypatch.setattr(lecture2doc, "extract_frames", boom)
     with pytest.raises(SystemExit, match="no video frames extracted"):
         run(video, pdf, pptx, tmp_path, "--no-cleanup")
+
+
+def test_transcribe_api_error_exits_without_traceback_or_key(tmp_path, monkeypatch):
+    import httpx2
+    import openai
+
+    video, pdf, pptx = setup(tmp_path, monkeypatch)
+
+    def denied(*a, **k):
+        raise openai.AuthenticationError(
+            "invalid credentials",
+            response=httpx2.Response(401, request=httpx2.Request("POST", "http://x")), body=None)
+
+    monkeypatch.setattr(lecture2doc, "transcribe_words", denied)
+    with pytest.raises(SystemExit) as exc_info:
+        run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    msg = str(exc_info.value)
+    assert "speech-to-text failed" in msg
+    assert "invalid credentials" in msg
+    assert "dummy" not in msg

@@ -11,6 +11,8 @@ import json
 import logging
 from pathlib import Path
 
+import openai
+
 from api import make_client
 from cleanup import LLMCache, build_glossary, build_outline, cleanup_spans
 from config import ConfigError, check_ffmpeg, load_config
@@ -144,6 +146,8 @@ def main(argv=None) -> int:
         words = transcribe_words(cfg, video, workdir / "words.json", args.language)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from None
+    except openai.APIError as exc:
+        raise SystemExit(f"speech-to-text failed: {exc}") from None
     raws = assign_words(words, spans)
 
     if args.no_cleanup:
