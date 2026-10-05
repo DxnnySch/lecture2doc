@@ -151,6 +151,16 @@ def print_cut_summary(report: CutReport) -> None:
               f"(a word right at such a change may land on the neighbouring slide)")
 
 
+def save_document(out: Path, title: str, slides, span_texts, args) -> None:
+    try:
+        write_docx(out, title, slides, span_texts, thumbnails=not args.no_thumbnails, keep_raw=args.keep_raw,
+                   timestamps=not args.no_timestamps, page_breaks=not args.no_page_breaks,
+                   group_by_slide=args.group_by_slide)
+    except PermissionError:
+        raise SystemExit(f"cannot write {out}: is it open in Word? Close it and run the same command with --rebuild "
+                         f"(everything else is saved, nothing is transcribed again), or pick another file with -o") from None
+
+
 def check_inputs(args) -> None:
     checks = [("PDF", args.pdf), ("PPTX", args.pptx)]
     if not args.rebuild:  # a rebuild never touches the video
@@ -175,10 +185,8 @@ def rebuild(args) -> int:
     slides = load_slides(args.pdf, args.pptx)
     print(f"  {len(slides)} slides; rebuilding from {seg_path}")
     entries = _parse_segments(seg_path, len(slides), need_text=True)
-    write_docx(out, video.stem, slides,
-               [SpanText(sp.slide, sp.start, clean, raw, sp.end) for sp, raw, clean in entries],
-               thumbnails=not args.no_thumbnails, keep_raw=args.keep_raw, timestamps=not args.no_timestamps,
-               page_breaks=not args.no_page_breaks, group_by_slide=args.group_by_slide)
+    save_document(out, video.stem, slides, [SpanText(sp.slide, sp.start, clean, raw, sp.end)
+                                            for sp, raw, clean in entries], args)
     print(f"Wrote {out}")
     return 0
 
@@ -268,10 +276,8 @@ def main(argv=None) -> int:
                   for s, k, r, c in zip(spans, clips, raws, cleans)],
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    write_docx(out, video.stem, slides,
-               [SpanText(s.slide, s.start, c, r, s.end) for s, r, c in zip(spans, raws, cleans)],
-               thumbnails=not args.no_thumbnails, keep_raw=args.keep_raw, timestamps=not args.no_timestamps,
-               page_breaks=not args.no_page_breaks, group_by_slide=args.group_by_slide)
+    save_document(out, video.stem, slides, [SpanText(s.slide, s.start, c, r, s.end)
+                                            for s, r, c in zip(spans, raws, cleans)], args)
     print(f"Wrote {out}")
     return 0
 

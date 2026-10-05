@@ -378,12 +378,13 @@ def silent_gap_setup(tmp_path, monkeypatch):
 def test_audio_is_cut_in_the_silent_gap_at_every_slide_change(tmp_path, monkeypatch, capsys):
     video, pdf, pptx, stt = silent_gap_setup(tmp_path, monkeypatch)
     out = run(video, pdf, pptx, tmp_path, "--no-cleanup")
-    assert [(round(c.start, 1), round(c.end, 1)) for c in stt.clips] == [(0.0, 4.0), (4.0, 8.0), (8.0, 12.0)]
-    assert [round(c.speech, 1) for c in stt.clips] == [3.0 + 0.0, 2.0, 3.0] or all(c.speech > 1.5 for c in stt.clips)
+    # cut in the middle of the gaps 3-5 s and 7-9 s (at 4 s and 8 s); each clip keeps 0.25 s of the silence
+    assert [t for c in stt.clips for t in (c.start, c.end)] == pytest.approx([0.0, 3.25, 4.75, 7.25, 8.75, 12.0], abs=0.1)
+    assert [round(c.speech) for c in stt.clips] == [3, 2, 3]
     assert "2 of 2 slide changes cut in the silent gap" in capsys.readouterr().out
     seg = json.loads((tmp_path / "w" / "segments.json").read_text(encoding="utf-8"))
-    assert [(round(s["audio_start"], 1), round(s["audio_end"], 1)) for s in seg["spans"]] == [
-        (0.0, 4.0), (4.0, 8.0), (8.0, 12.0)]
+    assert [t for s in seg["spans"] for t in (s["audio_start"], s["audio_end"])] == pytest.approx(
+        [0.0, 3.25, 4.75, 7.25, 8.75, 12.0], abs=0.1)
     assert [s["raw"] for s in seg["spans"]] == ["hello", "world", "again"]
     assert [p.text for p in Document(out).paragraphs if p.style.name == "Normal" and p.text] == [
         "hello", "world", "again"]
@@ -475,3 +476,34 @@ def test_group_by_slide_option_also_applies_when_rebuilding(tmp_path, monkeypatc
                       "--rebuild"])
     assert [p.text for p in Document(default).paragraphs if p.style.name == "Heading 1"] == [
         "Slide 1 – Alpha", "Slide 2 – Beta", "Slide 1 – Alpha"]
+
+
+def test_a_document_that_is_open_in_word_is_a_clear_error_and_nothing_is_lost(tmp_path, monkeypatch):
+    video, pdf, pptx = setup(tmp_path, monkeypatch)
+
+    def locked(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(lecture2doc, "write_docx", locked)
+    with pytest.raises(SystemExit, match="open in Word.*--rebuild"):
+        run(video, pdf, pptx, tmp_path, "--no-cleanup")
+    assert (tmp_path / "w" / "segments.json").exists()  # the results were saved before the document was written
+    monkeypatch.undo()
+    monkeypatch.setenv("SCADS_API_KEY", "dummy")
+    out = tmp_path / "later.docx"  # --rebuild then finishes the job offline
+    forbid_heavy_work(monkeypatch)
+    lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(out), "--workdir", str(tmp_path / "w"), "--rebuild"])
+    assert out.exists()
+
+
+def test_rebuild_into_a_locked_document_is_a_clear_error_too(tmp_path, monkeypatch):
+    video, pdf, pptx = setup(tmp_path, monkeypatch)
+    run(video, pdf, pptx, tmp_path, "--no-cleanup")
+
+    def locked(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(lecture2doc, "write_docx", locked)
+    with pytest.raises(SystemExit, match="open in Word"):
+        lecture2doc.main([str(video), str(pdf), str(pptx), "-o", str(tmp_path / "x.docx"),
+                          "--workdir", str(tmp_path / "w"), "--rebuild"])

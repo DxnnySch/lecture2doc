@@ -15,6 +15,7 @@ MIN_SILENCE = 0.1      # seconds: shorter silences are not reported at all
 MIN_GAP = 0.5          # seconds: only silences at least this long can be a gap between two recordings
 WINDOW = 3.0           # seconds around a slide change in which its gap is looked for
 MIN_CLIP = 0.5         # seconds: no clip may be shorter than this
+KEEP_SILENCE = 0.25    # seconds of the silent gap kept at each end of a clip (the model hallucinates on long silence)
 
 
 @dataclass
@@ -65,20 +66,23 @@ def _speech_seconds(start: float, end: float, silences) -> float:
     return max(0.0, (end - start) - silent)
 
 
-def plan_cuts(spans, silences, window: float = WINDOW, min_gap: float = MIN_GAP,
-              min_clip: float = MIN_CLIP) -> tuple[list[Clip], CutReport]:
+def plan_cuts(spans, silences, window: float = WINDOW, min_gap: float = MIN_GAP, min_clip: float = MIN_CLIP,
+              keep: float = KEEP_SILENCE) -> tuple[list[Clip], CutReport]:
     """One clip per span. Each slide change is cut in the middle of the longest silent gap within `window` seconds
-    of it; without such a gap, or if that would squeeze a neighbouring clip, at the detected slide change."""
+    of it (without such a gap, or if that would squeeze a neighbouring clip, exactly at the detected slide change);
+    the clips on either side keep only `keep` seconds of that silence, because speech-to-text models invent text
+    (\"Thank you.\") for long silent stretches. The same goes for silence at the very start and end."""
     report = CutReport()
     boundaries = [s.end for s in spans[:-1]]
     first, last = spans[0].start, spans[-1].end
     cuts: list[float] = []
+    gaps: list[tuple[float, float] | None] = []
     for k, boundary in enumerate(boundaries):
         lower = (cuts[-1] if cuts else first) + min_clip
         upper = (boundaries[k + 1] if k + 1 < len(boundaries) else last) - min_clip
         near = [(s, e) for s, e in silences
                 if e - s >= min_gap and e >= boundary - window and s <= boundary + window
-                and lower <= (s + e) / 2 <= upper]  # a gap that is already used up, or too close to the next change, is no candidate
+                and lower <= (s + e) / 2 <= upper]  # not yet used up, and not too close to the next change
         gap = max(near, key=lambda g: (g[1] - g[0], -abs((g[0] + g[1]) / 2 - boundary)), default=None)
         if gap is not None:
             cuts.append((gap[0] + gap[1]) / 2)
@@ -87,6 +91,24 @@ def plan_cuts(spans, silences, window: float = WINDOW, min_gap: float = MIN_GAP,
         else:
             cuts.append(max(boundary, lower))
             report.at_video_change += 1
-    edges = [first, *cuts, last]
-    clips = [Clip(a, b, _speech_seconds(a, b, silences)) for a, b in zip(edges, edges[1:])]
+        gaps.append(gap)
+
+    def silence_at(point: float, side: str):
+        """A silence of at least min_gap that starts at (side 'start') or ends at (side 'end') `point`."""
+        for s, e in silences:
+            if e - s >= min_gap and ((side == "start" and s <= point + 0.05 and e > point)
+                                     or (side == "end" and e >= point - 0.05 and s < point)):
+                return s, e
+        return None
+
+    starts, ends = [first, *cuts], [*cuts, last]
+    clips = []
+    for k, (start, end) in enumerate(zip(starts, ends)):
+        before = gaps[k - 1] if k > 0 else silence_at(first, "start")   # silence just before this clip
+        after = gaps[k] if k < len(gaps) else silence_at(last, "end")   # silence just after it
+        trimmed_start = max(start, before[1] - keep) if before else start
+        trimmed_end = min(end, after[0] + keep) if after else end
+        if trimmed_end - trimmed_start >= min_clip:
+            start, end = trimmed_start, trimmed_end
+        clips.append(Clip(start, end, _speech_seconds(start, end, silences)))
     return clips, report
