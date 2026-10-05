@@ -8,6 +8,8 @@ from io import BytesIO
 from docx import Document
 from docx.shared import Inches, Pt
 
+MAX_WORDS = 80
+
 
 @dataclass
 class SpanText:
@@ -15,6 +17,11 @@ class SpanText:
     start: float
     text: str
     raw: str
+
+
+def _clean_xml(s: str) -> str:
+    """Remove XML-invalid control characters [\x00-\x08\x0b\x0c\x0e-\x1f]."""
+    return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', s)
 
 
 def fmt_time(seconds: float) -> str:
@@ -26,19 +33,39 @@ def fmt_time(seconds: float) -> str:
 
 def paragraphize(text: str, per: int = 4) -> list[str]:
     sentences = [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s]
-    return [" ".join(sentences[i: i + per]) for i in range(0, len(sentences), per)]
+    # Split long unpunctuated sentences into chunks of at most MAX_WORDS
+    result = []
+    had_splits = False
+    for s in sentences:
+        words = s.split()
+        if len(words) > MAX_WORDS:
+            # Split this long sentence into chunks - each chunk is its own paragraph
+            had_splits = True
+            for i in range(0, len(words), MAX_WORDS):
+                result.append(" ".join(words[i:i + MAX_WORDS]))
+        else:
+            result.append(s)
+
+    # If we had to split any sentence due to length, don't apply per-grouping
+    # Each split chunk becomes its own paragraph
+    if had_splits:
+        return result
+
+    # Otherwise, group normal sentences by per
+    return [" ".join(result[i: i + per]) for i in range(0, len(result), per)]
 
 
 def write_docx(path, title: str, slides, span_texts: list[SpanText],
                thumbnails: bool = True, keep_raw: bool = False) -> None:
     doc = Document()
-    doc.add_heading(title, 0)
+    doc.add_heading(_clean_xml(title), 0)
     by_slide: dict[int, list[SpanText]] = {}
     for st in sorted(span_texts, key=lambda s: s.start):
         if st.text.strip():
             by_slide.setdefault(st.slide, []).append(st)
     for s in slides:
-        doc.add_heading(f"Slide {s.number} – {s.title}" if s.title else f"Slide {s.number}", 1)
+        heading = f"Slide {s.number} – {_clean_xml(s.title)}" if s.title else f"Slide {s.number}"
+        doc.add_heading(heading, 1)
         if thumbnails:
             buf = BytesIO()
             s.image.save(buf, "PNG")
@@ -52,9 +79,9 @@ def write_docx(path, title: str, slides, span_texts: list[SpanText],
         for e in entries:
             for k, para in enumerate(paragraphize(e.text)):
                 prefix = f"[{fmt_time(e.start)}] " if timed and k == 0 else ""
-                doc.add_paragraph(prefix + para)
+                doc.add_paragraph(prefix + _clean_xml(para))
             if keep_raw:
-                run = doc.add_paragraph().add_run("Raw: " + e.raw)
+                run = doc.add_paragraph().add_run("Raw: " + _clean_xml(e.raw))
                 run.italic = True
                 run.font.size = Pt(9)
     doc.save(path)
