@@ -242,3 +242,57 @@ def test_transcribe_words_cache_non_dict_meta_is_miss(tmp_path):
 def test_assign_words_empty_spans_returns_empty():
     words = [Word("a", 1, 2), Word("b", 3, 4)]
     assert assign_words(words, []) == []
+
+
+class FlakyClient(FakeClient):
+    """Fails (non-retryable) on the given call number."""
+
+    def __init__(self, fail_on):
+        super().__init__()
+        self.fail_on = fail_on
+
+    def create(self, **kwargs):
+        if self.calls + 1 == self.fail_on:
+            self.calls += 1
+            raise RuntimeError("gateway exploded")
+        return super().create(**kwargs)
+
+
+def _setup_stt(tmp_path):
+    images, _ = render_pdf(make_pdf(tmp_path / "s.pdf", 1))
+    video = make_video(images, [0] * 12, tmp_path / "v.mp4")
+    return video, Config("k", "http://x", "alias-stt", "llm", "llm"), tmp_path / "words.json"
+
+
+def test_stt_resumes_from_chunk_cache_after_failure(tmp_path):
+    video, cfg, cache = _setup_stt(tmp_path)
+    partial = tmp_path / "words.json.chunks.json"
+    flaky = FlakyClient(fail_on=3)
+    with pytest.raises(RuntimeError, match="gateway exploded"):
+        transcribe_words(cfg, video, cache, chunk_seconds=5, client=flaky)
+    assert flaky.calls == 3 and not cache.exists()
+    saved = json.loads(partial.read_text(encoding="utf-8"))
+    assert sorted(saved["chunks"]) == ["0", "1"] and saved["meta"]["chunk_seconds"] == 5
+
+    good = FakeClient()
+    words = transcribe_words(cfg, video, cache, chunk_seconds=5, client=good)
+    assert good.calls == 1  # only the missing chunk
+    assert [round(w.start, 1) for w in words] == [0.1, 5.1, 10.1]
+    assert cache.exists() and not partial.exists()
+    assert [p.name for p in tmp_path.glob("*.tmp")] == []
+
+
+def test_stt_chunk_cache_with_other_language_is_ignored(tmp_path):
+    video, cfg, cache = _setup_stt(tmp_path)
+    with pytest.raises(RuntimeError, match="gateway exploded"):
+        transcribe_words(cfg, video, cache, language=None, chunk_seconds=5, client=FlakyClient(fail_on=3))
+    good = FakeClient()
+    transcribe_words(cfg, video, cache, language="de", chunk_seconds=5, client=good)
+    assert good.calls == 3
+
+
+def test_stt_cache_files_are_written_atomically(tmp_path):
+    video, cfg, cache = _setup_stt(tmp_path)
+    words = transcribe_words(cfg, video, cache, chunk_seconds=5, client=FakeClient())
+    assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp" or p.name.endswith(".chunks.json")] == []
+    assert [Word(**d) for d in json.loads(cache.read_text(encoding="utf-8"))["words"]] == words

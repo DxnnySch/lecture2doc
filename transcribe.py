@@ -11,6 +11,7 @@ from pathlib import Path
 from openai import BadRequestError
 
 from api import make_client, retry_call
+from fsutil import atomic_write_json
 
 log = logging.getLogger(__name__)
 
@@ -111,29 +112,44 @@ def transcribe_words(cfg, video, cache_path: Path, language: str | None = None,
         except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
             pass  # Cache is corrupt, treat as a miss
 
+    meta = {"video": video.name, "size": video_size, "language": language, "chunk_seconds": chunk_seconds}
+    chunks_path = cache_path.with_name(cache_path.name + ".chunks.json")
+    done = _load_chunk_cache(chunks_path, meta)
+
     client = client or make_client(cfg)
-    words: list[Word] = []
     with tempfile.TemporaryDirectory() as tmp:
         chunks = split_audio(video, Path(tmp), chunk_seconds)
-        for i, (path, offset) in enumerate(chunks, 1):
-            print(f"  transcribing chunk {i}/{len(chunks)}", flush=True)
-            words.extend(parse_response(_transcribe_chunk(client, cfg.stt_model, path, language), offset, chunk_seconds))
+        for i, (path, offset) in enumerate(chunks):
+            if i in done:
+                print(f"  chunk {i + 1}/{len(chunks)} cached", flush=True)
+                continue
+            print(f"  transcribing chunk {i + 1}/{len(chunks)}", flush=True)
+            done[i] = parse_response(_transcribe_chunk(client, cfg.stt_model, path, language), offset, chunk_seconds)
+            atomic_write_json(chunks_path, {
+                "meta": meta,
+                "chunks": {str(k): [asdict(w) for w in v] for k, v in done.items()},
+            })
+        words = [w for i in range(len(chunks)) for w in done.get(i, [])]
 
     if not words:
         raise RuntimeError("transcription returned no words")
 
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_data = {
-        "meta": {
-            "video": video.name,
-            "size": video_size,
-            "language": language,
-            "chunk_seconds": chunk_seconds,
-        },
-        "words": [asdict(w) for w in words],
-    }
-    cache_path.write_text(json.dumps(cache_data, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(cache_path, {"meta": meta, "words": [asdict(w) for w in words]})
+    chunks_path.unlink(missing_ok=True)
     return words
+
+
+def _load_chunk_cache(path: Path, meta: dict) -> dict[int, list[Word]]:
+    """Chunks transcribed by an earlier, interrupted run (empty if absent, corrupt or for other settings)."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("meta") != meta:
+            return {}
+        return {int(k): [Word(**d) for d in v] for k, v in data["chunks"].items()}
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError, AttributeError):
+        return {}
 
 
 def assign_words(words: list[Word], spans) -> list[str]:
