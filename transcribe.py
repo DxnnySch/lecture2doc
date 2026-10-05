@@ -87,7 +87,7 @@ def _transcribe_chunk(client, model: str, path: Path, language: str | None):
     try:
         return retry_call(lambda: call({"timestamp_granularities": ["word", "segment"]}))
     except BadRequestError as e:  # gateway rejected word timestamps
-        log.warning(f"word timestamps not supported, falling back: {e.message}")
+        log.warning("word timestamps not supported, falling back: %s", e.message)
         return retry_call(lambda: call({}))
 
 
@@ -103,12 +103,12 @@ def transcribe_words(cfg, video, cache_path: Path, language: str | None = None,
             cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
             if isinstance(cache_data, dict) and "meta" in cache_data and "words" in cache_data:
                 meta = cache_data["meta"]
-                if (meta.get("video") == video.name and
+                if isinstance(meta, dict) and (meta.get("video") == video.name and
                     meta.get("size") == video_size and
                     meta.get("language") == language and
                     meta.get("chunk_seconds") == chunk_seconds):
                     return [Word(**d) for d in cache_data["words"]]
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
             pass  # Cache is corrupt, treat as a miss
 
     client = client or make_client(cfg)

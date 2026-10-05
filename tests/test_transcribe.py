@@ -63,11 +63,13 @@ def test_split_audio_chunks_and_offsets(tmp_path):
 class FakeClient:
     def __init__(self, raise_error_on_first=False):
         self.calls = 0
+        self.call_kwargs = []
         self.raise_error_on_first = raise_error_on_first
         self.audio = NS(transcriptions=NS(create=self.create))
 
     def create(self, **kwargs):
         self.calls += 1
+        self.call_kwargs.append(kwargs.copy())
         assert kwargs["model"] == "alias-stt" and kwargs["response_format"] == "verbose_json"
         if self.raise_error_on_first and self.calls == 1 and "timestamp_granularities" in kwargs:
             raise BadRequestError("word timestamps not supported", response=httpx2.Response(400, request=httpx2.Request("POST", "http://x")), body=None)
@@ -139,15 +141,30 @@ def test_split_audio_bad_input_raises(tmp_path):
     # Pass a non-media file
     bad_file = tmp_path / "not_a_video.txt"
     bad_file.write_text("not a video")
-    with pytest.raises(RuntimeError, match="audio extraction failed"):
+    with pytest.raises(RuntimeError, match="audio extraction failed") as exc_info:
         split_audio(bad_file, tmp_path / "chunks", chunk_seconds=5)
+    # Assert stderr snippet is in the error message (should contain ffmpeg error)
+    error_msg = str(exc_info.value)
+    assert "Error" in error_msg or "error" in error_msg, f"Expected error details in: {error_msg}"
+    # Verify it's extracting stderr, not just the generic message
+    assert len(error_msg) > len("audio extraction failed: ")  # Has stderr content appended
 
 
-def test_split_audio_no_chunks_produced_raises(tmp_path):
-    # Create a video file that ffmpeg can't process or produces no chunks
-    bad_file = tmp_path / "empty.mp3"
-    bad_file.write_bytes(b"not audio data")
-    with pytest.raises(RuntimeError, match="audio extraction failed"):
+def test_split_audio_no_chunks_produced_raises(tmp_path, monkeypatch):
+    # Monkeypatch subprocess.run to succeed without creating chunk files
+    import subprocess
+    original_run = subprocess.run
+
+    def fake_run(*args, **kwargs):
+        # Return successful CompletedProcess but don't create any files
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    bad_file = tmp_path / "test.mp4"
+    bad_file.write_bytes(b"not a real video")
+
+    with pytest.raises(RuntimeError, match="no audio extracted from"):
         split_audio(bad_file, tmp_path / "chunks", chunk_seconds=5)
 
 
@@ -169,25 +186,57 @@ def test_transcribe_words_no_words_extracted_raises(tmp_path):
     cache = tmp_path / "words.json"
     with pytest.raises(RuntimeError, match="transcription returned no words"):
         transcribe_words(cfg, video, cache, chunk_seconds=5, client=client)
+    # Cache file should not exist after error
+    assert not cache.exists()
 
 
 def test_bad_request_error_fallback_and_log(tmp_path, caplog):
+    import logging
     images, _ = render_pdf(make_pdf(tmp_path / "s.pdf", 1))
     video = make_video(images, [0] * 12, tmp_path / "v.mp4")
     cfg = Config("k", "http://x", "alias-stt", "llm", "llm")
     client = FakeClient(raise_error_on_first=True)
     cache = tmp_path / "words.json"
 
-    import logging
     caplog.set_level(logging.WARNING)
 
     words = transcribe_words(cfg, video, cache, chunk_seconds=5, client=client)
-    # First chunk should fail with BadRequestError, then retry without timestamp_granularities
-    # Expected: 3 chunks * 2 calls (first fails, second succeeds) but last chunk only calls once
-    # Actually: first chunk fails once and retries (2 calls), then chunks 2 and 3 just call normally
-    # So we should have something like 5 total calls
-    assert len(words) > 0
-    assert "word timestamps not supported" in caplog.text or client.calls > 3
+
+    # (a) Warning text is in caplog.text
+    assert "word timestamps not supported" in caplog.text
+
+    # (b) First call has timestamp_granularities, second call (fallback) does not
+    assert len(client.call_kwargs) >= 2
+    assert "timestamp_granularities" in client.call_kwargs[0], "First call should attempt with timestamp_granularities"
+    assert "timestamp_granularities" not in client.call_kwargs[1], "Second call (fallback) should not have timestamp_granularities"
+
+    # (c) Returned words equal expected parsed words
+    # FakeClient returns word "hi" with start=0.1, end=0.3
+    # For 3 chunks (0, 5, 10), we expect words with adjusted offsets
+    assert len(words) == 3
+    assert words[0].w == "hi" and words[0].start == pytest.approx(0.1)
+    assert words[1].w == "hi" and words[1].start == pytest.approx(5.1)
+    assert words[2].w == "hi" and words[2].start == pytest.approx(10.1)
+
+    # (d) Exact number of calls: first chunk fails and retries (2 calls), other chunks succeed (1 call each)
+    assert client.calls == 4  # 2 for first chunk (fail + retry), 1 for second, 1 for third
+
+
+def test_transcribe_words_cache_non_dict_meta_is_miss(tmp_path):
+    # Test that a cache with non-dict "meta" is treated as a miss
+    images, _ = render_pdf(make_pdf(tmp_path / "s.pdf", 1))
+    video = make_video(images, [0] * 12, tmp_path / "v.mp4")
+    cfg = Config("k", "http://x", "alias-stt", "llm", "llm")
+    client = FakeClient()
+    cache = tmp_path / "words.json"
+
+    # Create cache with non-dict meta (string instead of dict)
+    cache_data = {"meta": "not a dict", "words": []}
+    cache.write_text(json.dumps(cache_data), encoding="utf-8")
+
+    # Should re-transcribe due to invalid meta
+    words = transcribe_words(cfg, video, cache, chunk_seconds=5, client=client)
+    assert client.calls == 3  # Should have called 3 times for 3 chunks
 
 
 def test_assign_words_empty_spans_returns_empty():
